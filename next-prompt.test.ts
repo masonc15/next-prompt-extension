@@ -58,6 +58,7 @@ import {
 	setOmpCompletionModuleForTests,
 	shouldTrigger,
 	suggestionCodePointCap,
+	tierFor,
 	suggestionMaxTokens,
 	SYSTEM_PROMPT,
 	THINKING_OPTIONS,
@@ -196,6 +197,23 @@ describe("loadConfig", () => {
 		const cfg = loadConfig(cwd);
 		expect(cfg.maxSuggestionChars).toBe(99);
 		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("serviceTier: valid tier is kept, invalid tier is ignored", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "np-cwd-"));
+		writeFile(tmpHome, "next-prompt.json", JSON.stringify({ serviceTier: "priority" }));
+		expect(loadConfig(cwd).serviceTier).toBe("priority");
+		writeFile(tmpHome, "next-prompt.json", JSON.stringify({ serviceTier: "turbo" }));
+		expect(loadConfig(cwd).serviceTier).toBeUndefined();
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("tierFor: only OpenAI Responses APIs receive a service tier", () => {
+		expect(tierFor({ api: "openai-codex-responses" }, "priority")).toBe("priority");
+		expect(tierFor({ api: "openai-responses" }, "flex")).toBe("flex");
+		expect(tierFor({ api: "openai-completions" }, "priority")).toBeUndefined();
+		expect(tierFor({ api: "claude-bridge" }, "priority")).toBeUndefined();
+		expect(tierFor({ api: "openai-codex-responses" }, undefined)).toBeUndefined();
 	});
 
 	test("T2: missing both files returns empty object (no throw)", () => {

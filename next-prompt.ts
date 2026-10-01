@@ -120,6 +120,9 @@ export interface NextPromptModelConfig {
 
 export type RenderMode = "widget" | "ghost" | "both";
 
+/** OpenAI Responses `service_tier`; "priority" is Codex/OpenAI fast mode. */
+export type ServiceTier = "auto" | "default" | "flex" | "priority";
+
 /**
  * Reasoning/thinking level for the suggestion model. Defined locally (not
  * imported from a host package) because Pi exports `ThinkingLevel` from
@@ -143,6 +146,11 @@ export interface NextPromptConfig {
 	debug?: boolean;
 	/** Reasoning/thinking level for the suggestion model ("minimal".."max"). */
 	thinking?: ThinkingLevel;
+	/**
+	 * OpenAI `service_tier` for the suggestion call ("priority" = fast mode).
+	 * Sent only to OpenAI Responses / Codex models; ignored elsewhere.
+	 */
+	serviceTier?: ServiceTier;
 	/** Key id that accepts the suggestion (any pi-tui KeyId). Defaults to "alt+/". */
 	acceptKey?: string;
 	/** How the suggestion is shown. "widget" (default) = below-editor line; "ghost" = inline overlay in the input box. */
@@ -277,6 +285,22 @@ const MAX_RECENT_TURNS = 200;
  * are fail-closed: they disable suggestion computation entirely.
  */
 const RENDER_MODES: readonly string[] = ["widget", "ghost", "both"];
+const SERVICE_TIERS: readonly string[] = ["auto", "default", "flex", "priority"];
+/** APIs whose stream options accept `serviceTier`; other providers never see it. */
+const SERVICE_TIER_APIS: readonly string[] = [
+	"openai-codex-responses",
+	"openai-responses",
+];
+
+/** The configured service tier if this model's API accepts one, else undefined. */
+export function tierFor(
+	model: { api?: unknown },
+	tier: ServiceTier | undefined,
+): ServiceTier | undefined {
+	return typeof model.api === "string" && SERVICE_TIER_APIS.includes(model.api)
+		? tier
+		: undefined;
+}
 const THINKING_LEVELS: readonly string[] = [
 	"minimal",
 	"low",
@@ -504,6 +528,11 @@ function parseConfig(text: string): {
 			case "debug":
 				if (typeof value !== "boolean") failPrivacy("must be a boolean");
 				else cfg.debug = value;
+				break;
+			case "serviceTier":
+				if (typeof value !== "string" || !SERVICE_TIERS.includes(value))
+					console.warn(`next-prompt: invalid serviceTier in config; ignoring`);
+				else cfg.serviceTier = value as ServiceTier;
 				break;
 			case "allowCrossProviderPairs": {
 				const isValidPair = (p: unknown): p is [string, string] =>
@@ -2467,6 +2496,8 @@ export interface HostCtx extends HostContextLike {
 				 * so the extension must send the wire-level key itself. */
 				reasoningEffort?: ThinkingLevel;
 				maxTokens?: number;
+				/** OpenAI Responses `service_tier` (Codex fast mode = "priority"). */
+				serviceTier?: ServiceTier;
 				headers?: Record<string, string>;
 			},
 		) => Promise<AssistantMessage>;
@@ -3117,6 +3148,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				reasoning: effective.thinking,
 				maxTokens: suggestionMaxTokens(effective),
 				opencodeSessionId: effective.model?.sessionId,
+				serviceTier: effective.serviceTier,
 			});
 		} catch (err) {
 			if (!ac.signal.aborted) {
@@ -3129,6 +3161,8 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		diag("complete_done", {
 			sr: resp?.stopReason,
 			out: resp?.usage?.output,
+			cost: resp?.usage?.cost?.total,
+			tier: tierFor(resolved.model, effective.serviceTier),
 			err: resp?.errorMessage,
 		});
 		if (ac.signal.aborted || generation !== state.inputGeneration) return;
@@ -3227,6 +3261,8 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			maxTokens?: number;
 			/** `model.sessionId` from config (OpenCode gateway routing). */
 			opencodeSessionId?: string;
+			/** OpenAI `service_tier`; dropped for non-OpenAI APIs. */
+			serviceTier?: ServiceTier;
 		},
 	): Promise<AssistantMessage | undefined> {
 		if (hostKind === "pi") {
@@ -3239,6 +3275,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				signal: options.signal,
 				reasoningEffort: options.reasoning,
 				maxTokens: options.maxTokens,
+				serviceTier: tierFor(model, options.serviceTier),
 				headers: opencodeSessionHeaders(
 					model,
 					ctx,
