@@ -75,7 +75,11 @@ a fresh one. Anything in the input box is cleared first, whether it's a showing
 suggestion, an accepted one, or text you typed. A press while a suggestion is
 still being generated is ignored. Cleared text is one undo away: press
 **`Ctrl+-`** (Pi's editor undo) to get your draft back, which also cancels the
-new suggestion. If the new suggestion comes back identical,
+new suggestion. Changed your mind again? **`Ctrl+=`** (or `Ctrl+Plus`) redoes
+the regenerate: it clears the draft again and brings the regenerated
+suggestion back without a new model call, or regenerates if you undid it
+before it arrived. Redo only works while the box still holds the restored
+draft unchanged, and only for regenerate; Pi's editor has no general redo. If the new suggestion comes back identical,
 a short "regenerated the same suggestion" note says so. Each press is a new
 model call.
 
@@ -213,6 +217,7 @@ comes from the host's `CONFIG_DIR_NAME`:
 | `thinking` | unset | Reasoning level for the suggestion model: `"minimal"`/`"low"`/`"medium"`/`"high"`/`"xhigh"`/`"max"`. Set `"low"` for faster suggestions. Passed as `reasoning` to the model call. |
 | `serviceTier` | unset | OpenAI `service_tier` for the suggestion call: `"auto"`/`"default"`/`"flex"`/`"priority"` (`"priority"` is Codex/OpenAI fast mode, billed at about 2× standard). Sent only to `openai-responses` and `openai-codex-responses` models; other providers never see it. Config-file only. |
 | `acceptKey` | `"alt+/"` | Any pi-tui `KeyId` (e.g. `"alt+/"`, `"ctrl+space"`, `"shift+enter"`). Intercepted **before** the base editor, so keys like `ctrl+space` (`\x00`) won't pollute the box. Accept only fires when a suggestion is showing and the autocomplete dropdown is closed. |
+| `redoKey` | `"ctrl+="` | Any pi-tui `KeyId`; `ctrl+shift+…` of the same key also matches, so Ctrl+Plus works. Redoes a regenerate after `Ctrl+-` undid it. |
 | `regenerateKey` | `"shift+right"` | Any pi-tui `KeyId`. On an idle agent, clears the input box (suggestion or typed text) and computes a fresh suggestion; notes when the result is unchanged. Ignored when it equals `acceptKey`. |
 | `autoTrigger` | `true` | When `true` (default), suggestions are computed automatically after every settled turn. When `false`, manual-only: the accept key doubles as the manual trigger (first press generates, second press accepts, in-flight press is a no-op). |
 | `renderMode` | `"widget"` | `"widget"` (below-editor line), `"ghost"` (inline greyed text in the box), or `"both"` (inline ghost + below-editor widget). On OMP, `ghost`/`both` work too (see the editor-coexistence note above). |

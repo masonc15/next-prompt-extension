@@ -161,6 +161,11 @@ export interface NextPromptConfig {
 	 * ignored when it equals acceptKey.
 	 */
 	regenerateKey?: string;
+	/**
+	 * Key id that redoes a regenerate after Pi's undo (Ctrl+-) restored the
+	 * cleared draft. Defaults to "ctrl+=" (Ctrl+Shift+= / Ctrl+Plus also works).
+	 */
+	redoKey?: string;
 	/** How the suggestion is shown. "widget" (default) = below-editor line; "ghost" = inline overlay in the input box. */
 	renderMode?: RenderMode;
 	systemPrompt?: string;
@@ -276,6 +281,7 @@ const DEFAULT_MAX_TRANSCRIPT = 12000;
 const DEFAULT_MAX_SUGGESTION = 240;
 export const DEFAULT_ACCEPT_KEY = "alt+/";
 export const DEFAULT_REGENERATE_KEY = "shift+right";
+export const DEFAULT_REDO_KEY = "ctrl+=";
 
 /** Effective regenerate key; "" (disabled) when it would shadow the accept key. */
 export function regenerateKeyFor(cfg: NextPromptConfig): string {
@@ -476,6 +482,7 @@ const PROJECT_PREFERENCE_KEYS = [
 	"renderMode",
 	"acceptKey",
 	"regenerateKey",
+	"redoKey",
 	"rearmDelayMs",
 	"maxSuggestionChars",
 	"maxRecentTurns",
@@ -646,6 +653,11 @@ function parseConfig(text: string): {
 						`next-prompt: regenerateKey "tab" conflicts with autocomplete; ignoring`,
 					);
 				else cfg.regenerateKey = value;
+				break;
+			case "redoKey":
+				if (typeof value !== "string" || value.trim().length === 0)
+					console.warn(`next-prompt: invalid redoKey in config; ignoring`);
+				else cfg.redoKey = value;
 				break;
 			case "autoTrigger":
 				if (typeof value !== "boolean")
@@ -1847,6 +1859,15 @@ export interface SuggestionState {
 	 * the current request is not a regenerate.
 	 */
 	regenerateFrom: string;
+	redoKey: string;
+	/** Draft the latest regenerate cleared, until undo restores it or other input. */
+	regenCleared: string;
+	/**
+	 * Set when undo restored a regenerate's cleared draft: the draft (redo only
+	 * applies while the editor still holds exactly it) and the suggestion the
+	 * regenerate produced ("" if it was undone before one arrived).
+	 */
+	redo: { draft: string; suggestion: string } | undefined;
 	/** Current spinner frame shown as ghost text while a suggestion computes; "" when idle. */
 	spinner: string;
 	spinnerTimer: ReturnType<typeof setInterval> | undefined;
@@ -2207,11 +2228,57 @@ function makeInputHandler(
 				cleared: editorTextBefore.length,
 			});
 			state.regenerateFrom = state.suggestion || state.lastSuggestion;
+			state.regenCleared = editorTextBefore;
+			state.redo = undefined;
 			dismissSuggestion(state);
 			if (editorTextBefore.length > 0) state.setEditorText("");
 			markGlobalInput();
 			onManualTrigger();
 			return { consume: true };
+		}
+
+		// Redo (next-prompt's own, scoped to regenerate): pi-tui has undo but
+		// no redo. While the editor still holds exactly the draft that undo
+		// restored, clear it again (an undoable change) and bring back the
+		// regenerated suggestion, or regenerate again if undo interrupted it.
+		const isRedoKey =
+			state.redoKey !== "" &&
+			(matchesKey(data, state.redoKey as KeyId) ||
+				matchesKey(data, state.redoKey.replace(/^ctrl\+/, "ctrl+shift+") as KeyId));
+		if (
+			isRedoKey &&
+			onManualTrigger &&
+			state.redo &&
+			state.isIdleGetter() &&
+			editorTextBefore === state.redo.draft
+		) {
+			const { draft, suggestion } = state.redo;
+			state.redo = undefined;
+			diag("redo", { restore: Boolean(suggestion) });
+			state.abortInflight();
+			state.inputGeneration += 1;
+			state.regenCleared = draft;
+			state.setEditorText("");
+			markGlobalInput();
+			if (suggestion) {
+				showSuggestion(state, suggestion, state.inputGeneration, true);
+			} else {
+				state.regenerateFrom = "";
+				onManualTrigger();
+			}
+			return { consume: true };
+		}
+
+		// Undo right after a regenerate cleared a draft: the editor restores
+		// it. Remember what to redo before the cancel path below drops the
+		// regenerated suggestion.
+		const isUndoKey = getKeybindings().matches(data, "tui.editor.undo");
+		if (isUndoKey && state.regenCleared && editorTextBefore.length === 0) {
+			state.redo = { draft: state.regenCleared, suggestion: state.suggestion };
+			state.regenCleared = "";
+		} else if (!isNonTextInput(data)) {
+			// Typing ends the regenerate/undo/redo sequence.
+			state.regenCleared = "";
 		}
 
 		// Non-accept key: dismiss any active suggestion, abort in-flight work,
@@ -2238,7 +2305,7 @@ function makeInputHandler(
 		if (
 			editorTextBefore.length === 0 &&
 			isNonTextInput(data) &&
-			!getKeybindings().matches(data, "tui.editor.undo")
+			!isUndoKey
 		) {
 			markGlobalInput();
 			return undefined;
@@ -2998,6 +3065,9 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			publishWidget,
 			renderGhost: undefined,
 			regenerateFrom: "",
+			redoKey: effective.redoKey ?? DEFAULT_REDO_KEY,
+			regenCleared: "",
+			redo: undefined,
 			spinner: "",
 			spinnerTimer: undefined,
 			fallbackToWidget: undefined,

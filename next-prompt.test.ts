@@ -1555,6 +1555,9 @@ describe("real pi-tui editor integration", () => {
 			acceptKey: "alt+/",
 			regenerateKey: "shift+right",
 			regenerateFrom: "",
+			redoKey: "ctrl+=",
+			regenCleared: "",
+			redo: undefined,
 			spinner: "",
 			spinnerTimer: undefined,
 			renderMode: "ghost",
@@ -3802,6 +3805,80 @@ describe("regenerate key", () => {
 		expect(regenerateKeyFor({ acceptKey: "right" })).toBe("shift+right");
 		expect(regenerateKeyFor({ acceptKey: "Shift+Right" })).toBe("");
 		expect(regenerateKeyFor({ regenerateKey: "alt+r" })).toBe("alt+r");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Redo: after Ctrl+- undoes a regenerate, Ctrl+= / Ctrl+Plus re-applies it
+// ---------------------------------------------------------------------------
+
+const UNDO = "\x1b[45;5u"; // Ctrl+- as Ghostty sends it (kitty protocol)
+const REDO_PLUS = "\x1b[61;6u"; // Ctrl+Shift+= (Ctrl+Plus)
+const REDO_EQ = "\x1b[61;5u"; // Ctrl+=
+
+describe("redo after undoing a regenerate", () => {
+	test("RD1: redo clears the restored draft and re-shows the suggestion, no new call", async () => {
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			completeResult: { content: [{ type: "text", text: "fresh idea" }], stopReason: "stop" },
+		});
+		fake.setEditorText("my draft");
+		fake.inputHandler!(SHIFT_RIGHT);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(fake.widgetContent?.[0] ?? "").toContain("fresh idea");
+		// Undo goes to the editor, which restores the draft.
+		expect(fake.inputHandler!(UNDO)).toBeUndefined();
+		fake.setEditorText("my draft");
+		expect(fake.widgetContent).toBeUndefined();
+		expect(fake.inputHandler!(REDO_PLUS)).toEqual({ consume: true });
+		expect(fake.editorText).toBe("");
+		expect(fake.widgetContent?.[0] ?? "").toContain("fresh idea");
+		expect(fake.calls.complete).toHaveLength(1);
+		// Undo/redo can repeat.
+		fake.inputHandler!(UNDO);
+		fake.setEditorText("my draft");
+		expect(fake.inputHandler!(REDO_EQ)).toEqual({ consume: true });
+		expect(fake.editorText).toBe("");
+		expect(fake.calls.complete).toHaveLength(1);
+	});
+
+	test("RD2: redo of a regenerate undone mid-generation regenerates again", async () => {
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			deferredComplete: true,
+		});
+		fake.setEditorText("my draft");
+		fake.inputHandler!(SHIFT_RIGHT);
+		expect(fake.calls.complete).toHaveLength(1);
+		fake.inputHandler!(UNDO);
+		fake.setEditorText("my draft");
+		expect(fake.inputHandler!(REDO_EQ)).toEqual({ consume: true });
+		expect(fake.editorText).toBe("");
+		expect(fake.calls.complete).toHaveLength(2);
+	});
+
+	test("RD3: redo does nothing once the restored draft is edited, or with nothing to redo", async () => {
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		expect(fake.inputHandler!(REDO_EQ)).toBeUndefined();
+		fake.setEditorText("my draft");
+		fake.inputHandler!(SHIFT_RIGHT);
+		await new Promise((r) => setTimeout(r, 0));
+		fake.inputHandler!(UNDO);
+		fake.setEditorText("my draft!");
+		expect(fake.inputHandler!(REDO_EQ)).toBeUndefined();
+		expect(fake.editorText).toBe("my draft!");
+		expect(fake.calls.complete).toHaveLength(1);
+	});
+
+	test("RD4: redoKey is configurable", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "np-redo-"));
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ redoKey: "ctrl+shift+z" }),
+		);
+		expect(loadConfig(cwd).redoKey).toBe("ctrl+shift+z");
+		rmSync(cwd, { recursive: true, force: true });
 	});
 });
 
