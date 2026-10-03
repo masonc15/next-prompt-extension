@@ -1554,6 +1554,7 @@ describe("real pi-tui editor integration", () => {
 			lastSuggestion: "",
 			acceptKey: "alt+/",
 			regenerateKey: "shift+right",
+			regenerateFrom: "",
 			spinner: "",
 			spinnerTimer: undefined,
 			renderMode: "ghost",
@@ -3725,20 +3726,44 @@ describe("regenerate key", () => {
 		expect(fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
 		expect(fake.editorText).toBe("");
 		expect(fake.calls.complete).toHaveLength(2);
-		// Once edited, the text is the user's: shift+right leaves it alone.
+		// Edited text is cleared and regenerated too.
 		await new Promise((r) => setTimeout(r, 0));
 		fake.inputHandler!("\x1b/");
 		fake.setEditorText("first idea, edited");
-		expect(fake.inputHandler!(SHIFT_RIGHT)).toBeUndefined();
-		expect(fake.editorText).toBe("first idea, edited");
-		expect(fake.calls.complete).toHaveLength(2);
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+		expect(fake.editorText).toBe("");
+		expect(fake.calls.complete).toHaveLength(3);
 	});
 
-	test("G3: shift+right with text in the editor passes through", async () => {
+	test("G8: a regenerate that returns the same suggestion says so; a first suggestion does not", async () => {
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			completeResult: { content: [{ type: "text", text: "same idea" }], stopReason: "stop" },
+		});
+		const notes = () => fake.calls.notifies.filter(([m]) => m.includes("same suggestion"));
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(notes()).toHaveLength(0);
+		fake.inputHandler!(SHIFT_RIGHT);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(fake.widgetContent?.[0] ?? "").toContain("same idea");
+		expect(notes()).toHaveLength(1);
+		// A cancelled regenerate leaves no marker behind.
+		fake.inputHandler!(SHIFT_RIGHT);
+		fake.inputHandler!("x");
+		fake.setEditorText("");
+		// A plain manual trigger (nothing showing) is not a regenerate.
+		fake.inputHandler!("\x7f");
+		fake.inputHandler!("\x1b/");
+		await new Promise((r) => setTimeout(r, 0));
+		expect(notes()).toHaveLength(1);
+	});
+
+	test("G3: shift+right over text the user typed clears it and regenerates", async () => {
 		const { fake } = await setup({ branch: [assistantEntry("a")] });
 		fake.setEditorText("typing");
-		expect(fake.inputHandler!(SHIFT_RIGHT)).toBeUndefined();
-		expect(fake.calls.complete).toHaveLength(0);
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+		expect(fake.editorText).toBe("");
+		expect(fake.calls.complete).toHaveLength(1);
 	});
 
 	test("G4: shift+right while a suggestion is computing is ignored", async () => {

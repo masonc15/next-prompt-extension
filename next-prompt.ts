@@ -1841,6 +1841,12 @@ export interface SuggestionState {
 	setEditorText: (text: string) => void;
 	publishWidget: (content: string[] | undefined) => void;
 	renderGhost: (() => void) | undefined;
+	/**
+	 * The suggestion a regenerate replaced, so an identical result can be
+	 * flagged (the user could not otherwise tell it was regenerated); "" when
+	 * the current request is not a regenerate.
+	 */
+	regenerateFrom: string;
 	/** Current spinner frame shown as ghost text while a suggestion computes; "" when idle. */
 	spinner: string;
 	spinnerTimer: ReturnType<typeof setInterval> | undefined;
@@ -2184,10 +2190,9 @@ function makeInputHandler(
 			return { consume: true };
 		}
 
-		// Regenerate: drop the showing suggestion (if any) and compute a fresh
-		// one, on an idle editor that is empty or still holds the accepted,
-		// unedited suggestion (that text is cleared; anything the user typed or
-		// changed is left alone). Checked before the non-text pass-through below
+		// Regenerate: on an idle editor, clear whatever is in the box (a showing
+		// suggestion, an accepted one, or the user's own text) and compute a
+		// fresh suggestion. Checked before the non-text pass-through below
 		// because key ids like shift+right arrive ESC-prefixed. Only the global
 		// listener can start a computation, so the editor-local fallback (no
 		// onManualTrigger) lets the key fall through.
@@ -2195,18 +2200,15 @@ function makeInputHandler(
 			state.regenerateKey !== "" &&
 			(matchesKey(data, state.regenerateKey as KeyId) ||
 				matchesAcceptKeyRaw(data, state.regenerateKey));
-		const holdsAccepted =
-			editorTextBefore.length > 0 && editorTextBefore === state.lastSuggestion;
-		if (
-			isRegenerateKey &&
-			onManualTrigger &&
-			state.isIdleGetter() &&
-			(editorTextBefore.length === 0 || holdsAccepted)
-		) {
+		if (isRegenerateKey && onManualTrigger && state.isIdleGetter()) {
 			if (state.isComputing()) return { consume: true };
-			diag("regenerate", { showing: Boolean(state.suggestion), accepted: holdsAccepted });
+			diag("regenerate", {
+				showing: Boolean(state.suggestion),
+				cleared: editorTextBefore.length,
+			});
+			state.regenerateFrom = state.suggestion || state.lastSuggestion;
 			dismissSuggestion(state);
-			if (holdsAccepted) state.setEditorText("");
+			if (editorTextBefore.length > 0) state.setEditorText("");
 			markGlobalInput();
 			onManualTrigger();
 			return { consume: true };
@@ -2988,6 +2990,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			setEditorText: (text) => ctx.ui.setEditorText(text),
 			publishWidget,
 			renderGhost: undefined,
+			regenerateFrom: "",
 			spinner: "",
 			spinnerTimer: undefined,
 			fallbackToWidget: undefined,
@@ -3064,6 +3067,10 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		externalMessages?: unknown[],
 		source: "auto" | "manual" = "auto",
 	): Promise<void> {
+		// Take the regenerate marker now, so a request that skips, fails, or is
+		// cancelled can never leave it behind for a later suggestion.
+		const regeneratedFrom = ref.state?.regenerateFrom ?? "";
+		if (ref.state) ref.state.regenerateFrom = "";
 		try {
 			if (!isInteractiveContext(ctx)) return;
 			if (!ref.state || !effective) return;
@@ -3089,7 +3096,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				diag("skip", { why: "editor_not_empty", source });
 				return;
 			}
-			await maybeCompute(ctx, externalMessages, source === "manual");
+			await maybeCompute(ctx, externalMessages, source === "manual", regeneratedFrom);
 		} catch (err) {
 			diag("settled_error", { err: String(err).slice(0, 160) });
 			console.warn("next-prompt: settled-turn handler failed", err);
@@ -3120,6 +3127,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		ctx: HostCtx,
 		externalMessages?: unknown[],
 		manual = false,
+		regeneratedFrom = "",
 	): Promise<void> {
 		if (!ref.state || !effective) return;
 		const state = ref.state;
@@ -3404,8 +3412,16 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			installGhostEditor(ctx, state);
 		}
 		if (clean) {
-			if (ref.state === state)
+			if (ref.state === state) {
 				showSuggestion(state, clean, generation, host === "pi");
+				if (
+					regeneratedFrom &&
+					clean.trim().toLowerCase() === regeneratedFrom.trim().toLowerCase()
+				) {
+					diag("regenerate_same");
+					ctx.ui.notify("next-prompt: regenerated the same suggestion", "info");
+				}
+			}
 		} else if (raw.trim().length > 0 && !isSentinelOutput(raw)) {
 			// F-08 diagnostics: a non-empty, non-NONE reply that failed strict
 			// validation is provider chatter — surface it once instead of
