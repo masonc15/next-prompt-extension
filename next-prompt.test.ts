@@ -28,6 +28,7 @@ import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import type { Api, AssistantMessage } from "@earendil-works/pi-ai";
 
 import {
+	appendDiagLine,
 	buildMessages,
 	buildTranscript,
 	configureInteractively,
@@ -3072,6 +3073,20 @@ describe("controller wiring (agent_settled)", () => {
 		const log = readFileSync(join(tmpHome, "next-prompt-debug.log"), "utf-8");
 		expect(log).toContain('"event":"compute_go"');
 		expect(log).not.toContain("systemPrompt");
+	});
+
+	test("T74k: debug log rotates to .1 once it would pass the size cap", () => {
+		const path = join(tmpHome, "rotate-debug.log");
+		const line = "x".repeat(39) + "\n"; // 40 bytes
+		for (let i = 0; i < 3; i++) appendDiagLine(path, line, 100);
+		// 120 bytes would pass the 100-byte cap, so the third line starts a new file.
+		expect(statSync(`${path}.1`).size).toBe(80);
+		expect(statSync(path).size).toBe(40);
+		for (let i = 0; i < 3; i++) appendDiagLine(path, line, 100);
+		// Only one old generation is kept; it is replaced on the next rotation.
+		expect(statSync(`${path}.1`).size).toBe(80);
+		expect(statSync(path).size).toBe(80);
+		expect(existsSync(`${path}.2`)).toBe(false);
 	});
 
 	test("T74d: config acceptKey is reflected in the widget hint", async () => {

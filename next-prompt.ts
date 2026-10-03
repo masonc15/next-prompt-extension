@@ -68,6 +68,7 @@ import {
 	renameSync,
 	chmodSync,
 	rmSync,
+	statSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -2620,10 +2621,29 @@ interface NextPromptRef {
 // value means no file is written at all.
 let diagEnabled = false;
 
+// Keeps an always-on debug log bounded: past the cap the file moves to
+// `<path>.1` (replacing the previous one), so at most ~2x the cap is on disk.
+export const DIAG_MAX_BYTES = 5 * 1024 * 1024;
+
+export function appendDiagLine(
+	path: string,
+	line: string,
+	maxBytes: number = DIAG_MAX_BYTES,
+): void {
+	try {
+		if (statSync(path).size + Buffer.byteLength(line) > maxBytes) {
+			renameSync(path, `${path}.1`);
+		}
+	} catch {
+		/* no log yet */
+	}
+	appendFileSync(path, line);
+}
+
 function diag(event: string, fields: Record<string, unknown> = {}): void {
 	if (!diagEnabled) return;
 	try {
-		appendFileSync(
+		appendDiagLine(
 			join(getAgentDir(), "next-prompt-debug.log"),
 			JSON.stringify({ t: new Date().toISOString(), event, ...fields }) + "\n",
 		);
