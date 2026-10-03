@@ -1598,6 +1598,15 @@ export function sanitizeSuggestion(
 // Trigger decision
 // ---------------------------------------------------------------------------
 
+/** `role/stopReason` of the last message, for the debug log (never content). */
+export function lastMessageLabel(branch: BranchEntry[]): string {
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const msg = branch[i]!.type === "message" ? branch[i]!.message : undefined;
+		if (msg) return `${msg.role}/${(msg as { stopReason?: string }).stopReason ?? "-"}`;
+	}
+	return "none";
+}
+
 export function shouldTrigger(
 	branch: BranchEntry[],
 	isIdle: boolean,
@@ -2938,12 +2947,21 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				trustAvailable: hostTrustAvailableForHost(ctx),
 			});
 			diagEnabled = effective.debug === true;
-			if (effective.computeDisabled) return;
+			if (effective.computeDisabled) {
+				diag("skip", { why: "compute_disabled", source });
+				return;
+			}
 			// Manual-only mode: skip suggestions arriving from the automatic
 			// settle/end hook; manual trigger presses still work.
 			if (source === "auto" && !effective.autoTrigger) return;
-			if (host === "pi" && !ctx.isIdle()) return;
-			if (ctx.ui.getEditorText().length > 0) return;
+			if (host === "pi" && !ctx.isIdle()) {
+				diag("skip", { why: "not_idle", source });
+				return;
+			}
+			if (ctx.ui.getEditorText().length > 0) {
+				diag("skip", { why: "editor_not_empty", source });
+				return;
+			}
 			await maybeCompute(ctx, externalMessages);
 		} catch (err) {
 			diag("settled_error", { err: String(err).slice(0, 160) });
@@ -3009,14 +3027,21 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				ctx.ui.getEditorText(),
 			) !== "compute"
 		) {
+			diag("skip", { why: "last_message", last: lastMessageLabel(sourceEntries) });
 			return;
 		}
 		const resolved = resolveSuggestionModel(ctx, effective, notifiedFallback);
-		if (!resolved.model) return;
+		if (!resolved.model) {
+			diag("skip", { why: "no_model" });
+			return;
+		}
 		const transcript = buildTranscript(sourceEntries, effective);
 		// An empty normalized context has nothing to predict from — never
 		// call the model (Q3).
-		if (!transcript.trim()) return;
+		if (!transcript.trim()) {
+			diag("skip", { why: "empty_transcript" });
+			return;
+		}
 		diag("compute_go", {
 			tChars: transcript.length,
 			model: `${resolved.model.provider}/${resolved.model.id}`,
@@ -3171,6 +3196,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				serviceTier: effective.serviceTier,
 			});
 		} catch (err) {
+			diag("complete_error", { aborted: ac.signal.aborted });
 			if (!ac.signal.aborted) {
 				ctx.ui.notify("next-prompt: suggestion failed", "error");
 			}
@@ -3185,7 +3211,11 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			tier: tierFor(resolved.model, effective.serviceTier),
 			err: resp?.errorMessage,
 		});
-		if (ac.signal.aborted || generation !== state.inputGeneration) return;
+		if (ac.signal.aborted || generation !== state.inputGeneration) {
+			// A keypress or new turn while the model was answering.
+			diag("discarded", { aborted: ac.signal.aborted });
+			return;
+		}
 		if (resp === undefined) return; // transport unavailable; diagnostic already shown
 
 		if (resp.stopReason !== "stop") {

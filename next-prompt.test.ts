@@ -3089,6 +3089,40 @@ describe("controller wiring (agent_settled)", () => {
 		expect(existsSync(`${path}.2`)).toBe(false);
 	});
 
+	test("T74l: debug log records why a settled turn got no suggestion", async () => {
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ debug: true }),
+		);
+		const logPath = join(tmpHome, "next-prompt-debug.log");
+		const events = () =>
+			readFileSync(logPath, "utf-8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l));
+
+		const typing = await setup({ branch: [assistantEntry("a")] });
+		typing.fake.setEditorText("already typing");
+		await typing.fake.handlers.get("agent_settled")!({}, typing.fake.ctx);
+		const last = () => {
+			const { event, why, last: lastMsg } = events().at(-1);
+			return { event, why, last: lastMsg };
+		};
+		expect(last()).toEqual({ event: "skip", why: "editor_not_empty", last: undefined });
+
+		const interrupted = await setup({ branch: [assistantEntry("a", "aborted")] });
+		await interrupted.fake.handlers.get("agent_settled")!({}, interrupted.fake.ctx);
+		expect(interrupted.fake.calls.complete).toHaveLength(0);
+		expect(last()).toEqual({
+			event: "skip",
+			why: "last_message",
+			last: "assistant/aborted",
+		});
+		// Labels only: no message text reaches the log.
+		expect(readFileSync(logPath, "utf-8")).not.toContain("already typing");
+	});
+
 	test("T74d: config acceptKey is reflected in the widget hint", async () => {
 		const { fake } = await setup({
 			branch: [assistantEntry("a")],
