@@ -166,6 +166,27 @@ export interface NextPromptConfig {
 	 * cleared draft. Defaults to "ctrl+=" (Ctrl+Shift+= / Ctrl+Plus also works).
 	 */
 	redoKey?: string;
+	/**
+	 * When to show the generating spinner (ghost modes): "manual" (default) =
+	 * only for requested suggestions (accept-key trigger, regenerate, redo);
+	 * "always" = also for the automatic one after a response; "off" = never.
+	 */
+	spinner?: SpinnerMode;
+	/**
+	 * What the regenerate key may clear from the input box first: "any"
+	 * (default) = any text, including a draft; "accepted" = only an accepted
+	 * suggestion left unedited; "none" = only works on an empty box.
+	 */
+	regenerateClearsText?: RegenerateClearsText;
+	/** Notify when a regenerate returns the same suggestion. Defaults to true. */
+	sameSuggestionNotice?: boolean;
+	/**
+	 * Let key-press suggestions run after an interrupted or failed reply.
+	 * Defaults to true; automatic suggestions never run after one.
+	 */
+	manualAfterInterrupt?: boolean;
+	/** Debug log rotation cap in bytes. Defaults to 5 MB; 0 = no cap. Global only. */
+	debugMaxBytes?: number;
 	/** How the suggestion is shown. "widget" (default) = below-editor line; "ghost" = inline overlay in the input box. */
 	renderMode?: RenderMode;
 	systemPrompt?: string;
@@ -282,10 +303,17 @@ const DEFAULT_MAX_SUGGESTION = 240;
 export const DEFAULT_ACCEPT_KEY = "alt+/";
 export const DEFAULT_REGENERATE_KEY = "shift+right";
 export const DEFAULT_REDO_KEY = "ctrl+=";
+export type SpinnerMode = "manual" | "always" | "off";
+export type RegenerateClearsText = "any" | "accepted" | "none";
+const SPINNER_MODES: readonly string[] = ["manual", "always", "off"];
+const REGENERATE_CLEARS: readonly string[] = ["any", "accepted", "none"];
+/** Key value that disables an optional key binding. */
+export const KEY_OFF = "off";
 
 /** Effective regenerate key; "" (disabled) when it would shadow the accept key. */
 export function regenerateKeyFor(cfg: NextPromptConfig): string {
 	const key = cfg.regenerateKey ?? DEFAULT_REGENERATE_KEY;
+	if (key.trim().toLowerCase() === KEY_OFF) return "";
 	const accept = cfg.acceptKey ?? DEFAULT_ACCEPT_KEY;
 	return key.trim().toLowerCase() === accept.trim().toLowerCase() ? "" : key;
 }
@@ -483,6 +511,10 @@ const PROJECT_PREFERENCE_KEYS = [
 	"acceptKey",
 	"regenerateKey",
 	"redoKey",
+	"spinner",
+	"regenerateClearsText",
+	"sameSuggestionNotice",
+	"manualAfterInterrupt",
 	"rearmDelayMs",
 	"maxSuggestionChars",
 	"maxRecentTurns",
@@ -658,6 +690,31 @@ function parseConfig(text: string): {
 				if (typeof value !== "string" || value.trim().length === 0)
 					console.warn(`next-prompt: invalid redoKey in config; ignoring`);
 				else cfg.redoKey = value;
+				break;
+			case "spinner":
+				if (typeof value !== "string" || !SPINNER_MODES.includes(value))
+					console.warn(`next-prompt: invalid spinner in config; ignoring`);
+				else cfg.spinner = value as SpinnerMode;
+				break;
+			case "regenerateClearsText":
+				if (typeof value !== "string" || !REGENERATE_CLEARS.includes(value))
+					console.warn(`next-prompt: invalid regenerateClearsText in config; ignoring`);
+				else cfg.regenerateClearsText = value as RegenerateClearsText;
+				break;
+			case "sameSuggestionNotice":
+				if (typeof value !== "boolean")
+					console.warn(`next-prompt: invalid sameSuggestionNotice in config; ignoring`);
+				else cfg.sameSuggestionNotice = value;
+				break;
+			case "manualAfterInterrupt":
+				if (typeof value !== "boolean")
+					console.warn(`next-prompt: invalid manualAfterInterrupt in config; ignoring`);
+				else cfg.manualAfterInterrupt = value;
+				break;
+			case "debugMaxBytes":
+				if (typeof value !== "number" || !Number.isInteger(value) || value < 0)
+					console.warn(`next-prompt: invalid debugMaxBytes in config; ignoring`);
+				else cfg.debugMaxBytes = value;
 				break;
 			case "autoTrigger":
 				if (typeof value !== "boolean")
@@ -1860,6 +1917,7 @@ export interface SuggestionState {
 	 */
 	regenerateFrom: string;
 	redoKey: string;
+	regenerateClearsText: RegenerateClearsText;
 	/** Draft the latest regenerate cleared, until undo restores it or other input. */
 	regenCleared: string;
 	/**
@@ -2221,7 +2279,12 @@ function makeInputHandler(
 			state.regenerateKey !== "" &&
 			(matchesKey(data, state.regenerateKey as KeyId) ||
 				matchesAcceptKeyRaw(data, state.regenerateKey));
-		if (isRegenerateKey && onManualTrigger && state.isIdleGetter()) {
+		const clearable =
+			editorTextBefore.length === 0 ||
+			state.regenerateClearsText === "any" ||
+			(state.regenerateClearsText === "accepted" &&
+				editorTextBefore === state.lastSuggestion);
+		if (isRegenerateKey && onManualTrigger && state.isIdleGetter() && clearable) {
 			if (state.isComputing()) return { consume: true };
 			diag("regenerate", {
 				showing: Boolean(state.suggestion),
@@ -2825,6 +2888,7 @@ interface NextPromptRef {
 // next-prompt-debug.log — labels + sizes only, never content. An absent config
 // value means no file is written at all.
 let diagEnabled = false;
+let diagMaxBytes: number | undefined;
 
 // Keeps an always-on debug log bounded: past the cap the file moves to
 // `<path>.1` (replacing the previous one), so at most ~2x the cap is on disk.
@@ -2836,7 +2900,7 @@ export function appendDiagLine(
 	maxBytes: number = DIAG_MAX_BYTES,
 ): void {
 	try {
-		if (statSync(path).size + Buffer.byteLength(line) > maxBytes) {
+		if (maxBytes > 0 && statSync(path).size + Buffer.byteLength(line) > maxBytes) {
 			renameSync(path, `${path}.1`);
 		}
 	} catch {
@@ -2851,6 +2915,7 @@ function diag(event: string, fields: Record<string, unknown> = {}): void {
 		appendDiagLine(
 			join(getAgentDir(), "next-prompt-debug.log"),
 			JSON.stringify({ t: new Date().toISOString(), pid: process.pid, event, ...fields }) + "\n",
+			diagMaxBytes ?? DIAG_MAX_BYTES,
 		);
 	} catch {
 		/* best effort */
@@ -3033,6 +3098,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			trustAvailable: hostTrustAvailableForHost(ctx),
 		});
 		diagEnabled = effective.debug === true;
+		diagMaxBytes = effective.debugMaxBytes;
 		if (effective.computeDisabled) {
 			ctx.ui.notify(
 				"next-prompt: invalid privacy-sensitive config; suggestions disabled",
@@ -3065,7 +3131,11 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			publishWidget,
 			renderGhost: undefined,
 			regenerateFrom: "",
-			redoKey: effective.redoKey ?? DEFAULT_REDO_KEY,
+			redoKey:
+				(effective.redoKey ?? DEFAULT_REDO_KEY).trim().toLowerCase() === KEY_OFF
+					? ""
+					: (effective.redoKey ?? DEFAULT_REDO_KEY),
+			regenerateClearsText: effective.regenerateClearsText ?? "any",
 			regenCleared: "",
 			redo: undefined,
 			spinner: "",
@@ -3158,6 +3228,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				trustAvailable: hostTrustAvailableForHost(ctx),
 			});
 			diagEnabled = effective.debug === true;
+			diagMaxBytes = effective.debugMaxBytes;
 			if (effective.computeDisabled) {
 				diag("skip", { why: "compute_disabled", source });
 				return;
@@ -3238,7 +3309,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				// signal — the idle check would always fail there.
 				host === "omp" ? true : ctx.isIdle(),
 				ctx.ui.getEditorText(),
-				manual,
+				manual && effective.manualAfterInterrupt !== false,
 			) !== "compute"
 		) {
 			diag("skip", { why: "last_message", last: lastMessageLabel(sourceEntries) });
@@ -3404,7 +3475,9 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		// Only requests the user asked for (accept-key trigger, regenerate,
 		// redo) get the spinner; the automatic one after a response stays
 		// silent so the suggestion never announces itself.
-		if (manual) startSpinner(state);
+		const spinnerMode = effective.spinner ?? "manual";
+		if (spinnerMode === "always" || (spinnerMode === "manual" && manual))
+			startSpinner(state);
 		try {
 			resp = await completeSuggestion(host, ctx, resolved.model, context, {
 				signal: ac.signal,
@@ -3495,6 +3568,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			if (ref.state === state) {
 				showSuggestion(state, clean, generation, host === "pi");
 				if (
+					effective.sameSuggestionNotice !== false &&
 					regeneratedFrom &&
 					clean.trim().toLowerCase() === regeneratedFrom.trim().toLowerCase()
 				) {

@@ -1556,6 +1556,7 @@ describe("real pi-tui editor integration", () => {
 			regenerateKey: "shift+right",
 			regenerateFrom: "",
 			redoKey: "ctrl+=",
+			regenerateClearsText: "any",
 			regenCleared: "",
 			redo: undefined,
 			spinner: "",
@@ -3761,6 +3762,91 @@ describe("regenerate key", () => {
 		expect(notes()).toHaveLength(1);
 	});
 
+	test("G9: regenerateClearsText limits what shift+right may clear", async () => {
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ regenerateClearsText: "accepted" }),
+		);
+		const acc = await setup({
+			branch: [assistantEntry("a")],
+			completeResult: { content: [{ type: "text", text: "first idea" }], stopReason: "stop" },
+		});
+		await acc.fake.handlers.get("agent_settled")!({}, acc.fake.ctx);
+		acc.fake.inputHandler!("\x1b/");
+		expect(acc.fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+		expect(acc.fake.editorText).toBe("");
+		acc.fake.setEditorText("my own text");
+		expect(acc.fake.inputHandler!(SHIFT_RIGHT)).toBeUndefined();
+		expect(acc.fake.editorText).toBe("my own text");
+
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ regenerateClearsText: "none" }),
+		);
+		const none = await setup({ branch: [assistantEntry("a")] });
+		none.fake.setEditorText("anything");
+		expect(none.fake.inputHandler!(SHIFT_RIGHT)).toBeUndefined();
+		none.fake.setEditorText("");
+		expect(none.fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+	});
+
+	test("G10: regenerateKey and redoKey accept \"off\"", async () => {
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ regenerateKey: "off", redoKey: "off" }),
+		);
+		expect(regenerateKeyFor(loadConfig(process.cwd()))).toBe("");
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toBeUndefined();
+		expect(fake.inputHandler!("\x1b[61;5u")).toBeUndefined();
+		expect(fake.calls.complete).toHaveLength(0);
+	});
+
+	test("G11: sameSuggestionNotice false silences the identical-regenerate note", async () => {
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ sameSuggestionNotice: false }),
+		);
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			completeResult: { content: [{ type: "text", text: "same idea" }], stopReason: "stop" },
+		});
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		fake.inputHandler!(SHIFT_RIGHT);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(fake.calls.complete).toHaveLength(2);
+		expect(fake.calls.notifies.filter(([m]) => m.includes("same suggestion"))).toHaveLength(0);
+	});
+
+	test("G12: manualAfterInterrupt false keeps key presses from computing after an aborted turn", async () => {
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ manualAfterInterrupt: false }),
+		);
+		const { fake } = await setup({ branch: [assistantEntry("a", "aborted")] });
+		fake.inputHandler!(SHIFT_RIGHT);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(fake.calls.complete).toHaveLength(0);
+	});
+
+	test("G13: debugMaxBytes sets the log rotation cap", async () => {
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ debug: true, debugMaxBytes: 300 }),
+		);
+		expect(loadConfig(process.cwd()).debugMaxBytes).toBe(300);
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		for (let i = 0; i < 3; i++) await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(existsSync(join(tmpHome, "next-prompt-debug.log.1"))).toBe(true);
+		expect(statSync(join(tmpHome, "next-prompt-debug.log")).size).toBeLessThanOrEqual(300);
+	});
+
 	test("G3: shift+right over text the user typed clears it and regenerates", async () => {
 		const { fake } = await setup({ branch: [assistantEntry("a")] });
 		fake.setEditorText("typing");
@@ -3896,7 +3982,7 @@ describe("generating spinner", () => {
 	});
 	const frameIn = (painted: string) => SPINNER_FRAMES.find((f) => painted.includes(f));
 
-	async function ghostSetup(renderMode: string) {
+	async function ghostSetup(renderMode: string, extra: Record<string, unknown> = {}) {
 		const { fake } = await setup({
 			branch: [assistantEntry("a")],
 			hasPriorEditor: true,
@@ -3906,7 +3992,7 @@ describe("generating spinner", () => {
 		writeFile(
 			process.env.PI_CODING_AGENT_DIR!,
 			"next-prompt.json",
-			JSON.stringify({ renderMode }),
+			JSON.stringify({ renderMode, ...extra }),
 		);
 		await fake.handlers.get("session_start")!({}, fake.ctx);
 		const ed = fake.lastEditorComponent as unknown as { render: (w: number) => string[] };
@@ -4040,6 +4126,21 @@ describe("generating spinner", () => {
 		fake.resolveComplete();
 		await new Promise((r) => setTimeout(r, 0));
 		expect(paint()).toContain("suggestion");
+	});
+
+	test("SP10: spinner config: always shows on the automatic suggestion, off never shows", async () => {
+		const always = await ghostSetup("ghost", { spinner: "always" });
+		void always.fake.handlers.get("agent_settled")!({}, always.fake.ctx);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(frameIn(always.paint())).toBeDefined();
+		always.fake.resolveComplete();
+		await new Promise((r) => setTimeout(r, 0));
+
+		const off = await ghostSetup("ghost", { spinner: "off" });
+		off.fake.inputHandler!("\x1b/");
+		await new Promise((r) => setTimeout(r, 0));
+		expect(off.fake.calls.complete).toHaveLength(1);
+		expect(frameIn(off.paint())).toBeUndefined();
 	});
 
 	test("SP3: widget mode shows no spinner", async () => {

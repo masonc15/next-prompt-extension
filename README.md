@@ -219,8 +219,13 @@ comes from the host's `CONFIG_DIR_NAME`:
 | `thinking` | unset | Reasoning level for the suggestion model: `"minimal"`/`"low"`/`"medium"`/`"high"`/`"xhigh"`/`"max"`. Set `"low"` for faster suggestions. Passed as `reasoning` to the model call. |
 | `serviceTier` | unset | OpenAI `service_tier` for the suggestion call: `"auto"`/`"default"`/`"flex"`/`"priority"` (`"priority"` is Codex/OpenAI fast mode, billed at about 2× standard). Sent only to `openai-responses` and `openai-codex-responses` models; other providers never see it. Config-file only. |
 | `acceptKey` | `"alt+/"` | Any pi-tui `KeyId` (e.g. `"alt+/"`, `"ctrl+space"`, `"shift+enter"`). Intercepted **before** the base editor, so keys like `ctrl+space` (`\x00`) won't pollute the box. Accept only fires when a suggestion is showing and the autocomplete dropdown is closed. |
-| `redoKey` | `"ctrl+="` | Any pi-tui `KeyId`; `ctrl+shift+…` of the same key also matches, so Ctrl+Plus works. Redoes a regenerate after `Ctrl+-` undid it. |
-| `regenerateKey` | `"shift+right"` | Any pi-tui `KeyId`. On an idle agent, clears the input box (suggestion or typed text) and computes a fresh suggestion; notes when the result is unchanged. Ignored when it equals `acceptKey`. |
+| `spinner` | `"manual"` | `"manual"`: spinner only for suggestions you ask for (accept-key trigger, regenerate, redo). `"always"`: also for the automatic suggestion after each response. `"off"`: never. Ghost modes only. |
+| `regenerateClearsText` | `"any"` | What `regenerateKey` may clear first. `"any"`: any text, including a draft. `"accepted"`: only an accepted suggestion you haven't edited. `"none"`: regenerate only works on an empty box. |
+| `sameSuggestionNotice` | `true` | Notify when a regenerate returns the same suggestion. |
+| `manualAfterInterrupt` | `true` | Let key-press suggestions run after an interrupted or failed reply. Automatic suggestions never do. |
+| `debugMaxBytes` | `5242880` | Debug log rotation cap in bytes (5 MB); past it the log moves to `.1`. `0` = no cap. Global config only. |
+| `redoKey` | `"ctrl+="` | Any pi-tui `KeyId`; `ctrl+shift+…` of the same key also matches, so Ctrl+Plus works. Redoes a regenerate after `Ctrl+-` undid it. `"off"` disables it. |
+| `regenerateKey` | `"shift+right"` | Any pi-tui `KeyId`. On an idle agent, clears the input box (see `regenerateClearsText`) and computes a fresh suggestion; notes when the result is unchanged. Ignored when it equals `acceptKey`; `"off"` disables it. |
 | `autoTrigger` | `true` | When `true` (default), suggestions are computed automatically after every settled turn. When `false`, manual-only: the accept key doubles as the manual trigger (first press generates, second press accepts, in-flight press is a no-op). |
 | `renderMode` | `"widget"` | `"widget"` (below-editor line), `"ghost"` (inline greyed text in the box), or `"both"` (inline ghost + below-editor widget). On OMP, `ghost`/`both` work too (see the editor-coexistence note above). |
 | `rearmDelayMs` | `2000` | Delay (ms) before re-arming the last suggestion after the user deletes back to empty. No new model call. |
