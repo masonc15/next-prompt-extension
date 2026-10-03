@@ -82,6 +82,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	matchesKey,
+	isKeyRelease,
 	CURSOR_MARKER,
 	fuzzyFilter,
 	getKeybindings,
@@ -2124,6 +2125,10 @@ function makeInputHandler(
 	onManualTrigger?: () => void,
 ): (data: string) => { consume?: boolean } | undefined {
 	return (data: string) => {
+		// Terminals on the kitty keyboard protocol (Ghostty under Pi) also
+		// report key releases. A release is never a new keystroke: acting on it
+		// fired every trigger twice and let a release dismiss the suggestion.
+		if (isKeyRelease(data)) return undefined;
 		const markGlobalInput = () => {
 			if (!recordGlobalInput) return;
 			state.globalInputData = data;

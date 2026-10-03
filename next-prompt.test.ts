@@ -3861,6 +3861,28 @@ describe("generating spinner", () => {
 		expect(frameIn(paint())).toBeDefined();
 	});
 
+	test("SP6: kitty key-release events never act (one press, one request)", async () => {
+		const { fake, paint } = await ghostSetup("ghost");
+		void fake.handlers.get("agent_settled")!({}, fake.ctx);
+		await new Promise((r) => setTimeout(r, 0));
+		fake.resolveComplete();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(paint()).toContain("suggestion");
+		// Shift+Right press then release, as Ghostty sends with the kitty protocol.
+		expect(fake.inputHandler!("\x1b[1;2:1C")).toEqual({ consume: true });
+		await new Promise((r) => setTimeout(r, 0));
+		expect(fake.calls.complete).toHaveLength(2);
+		expect(fake.inputHandler!("\x1b[1;2:3C")).toBeUndefined();
+		expect(fake.calls.complete).toHaveLength(2);
+		expect(frameIn(paint())).toBeDefined();
+		// A text-key release over typed text must not dismiss or abort anything.
+		fake.resolveComplete();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(paint()).toContain("suggestion");
+		expect(fake.inputHandler!("\x1b[105;1:3u")).toBeUndefined();
+		expect(paint()).toContain("suggestion");
+	});
+
 	test("SP3: widget mode shows no spinner", async () => {
 		const { fake } = await ghostSetup("widget");
 		void fake.handlers.get("agent_settled")!({}, fake.ctx);
