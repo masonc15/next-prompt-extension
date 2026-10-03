@@ -3883,6 +3883,14 @@ describe("generating spinner", () => {
 		expect(paint()).toContain("suggestion");
 	});
 
+	test("SP7: a manual press still computes after an interrupted turn; auto does not", async () => {
+		const { fake } = await setup({ branch: [assistantEntry("a", "aborted")] });
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(fake.calls.complete).toHaveLength(0);
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+		expect(fake.calls.complete).toHaveLength(1);
+	});
+
 	test("SP3: widget mode shows no spinner", async () => {
 		const { fake } = await ghostSetup("widget");
 		void fake.handlers.get("agent_settled")!({}, fake.ctx);

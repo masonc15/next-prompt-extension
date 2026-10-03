@@ -1647,15 +1647,18 @@ export function shouldTrigger(
 	branch: BranchEntry[],
 	isIdle: boolean,
 	editorText: string,
+	manual = false,
 ): TriggerDecision {
 	if (!isIdle) return "skip";
 	if (editorText.length > 0) return "skip";
 	// Find the last message entry; it must be a completed assistant message.
+	// An explicit key press also accepts an interrupted or failed reply: the
+	// user asked for a suggestion, so an Esc on the last turn shouldn't block it.
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const entry = branch[i]!;
 		if (entry.type === "message" && entry.message) {
 			const msg = entry.message;
-			if (msg.role === "assistant" && msg.stopReason === "stop")
+			if (msg.role === "assistant" && (msg.stopReason === "stop" || manual))
 				return "compute";
 			return "skip";
 		}
@@ -3081,7 +3084,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				diag("skip", { why: "editor_not_empty", source });
 				return;
 			}
-			await maybeCompute(ctx, externalMessages);
+			await maybeCompute(ctx, externalMessages, source === "manual");
 		} catch (err) {
 			diag("settled_error", { err: String(err).slice(0, 160) });
 			console.warn("next-prompt: settled-turn handler failed", err);
@@ -3111,6 +3114,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 	async function maybeCompute(
 		ctx: HostCtx,
 		externalMessages?: unknown[],
+		manual = false,
 	): Promise<void> {
 		if (!ref.state || !effective) return;
 		const state = ref.state;
@@ -3144,6 +3148,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				// signal — the idle check would always fail there.
 				host === "omp" ? true : ctx.isIdle(),
 				ctx.ui.getEditorText(),
+				manual,
 			) !== "compute"
 		) {
 			diag("skip", { why: "last_message", last: lastMessageLabel(sourceEntries) });
