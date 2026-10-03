@@ -1837,6 +1837,9 @@ export interface SuggestionState {
 	setEditorText: (text: string) => void;
 	publishWidget: (content: string[] | undefined) => void;
 	renderGhost: (() => void) | undefined;
+	/** Current spinner frame shown as ghost text while a suggestion computes; "" when idle. */
+	spinner: string;
+	spinnerTimer: ReturnType<typeof setInterval> | undefined;
 	/**
 	 * Permanently switch this session from ghost/both to widget mode after a
 	 * ghost failure; the editor slot is left as it is. Guarded:
@@ -1885,6 +1888,44 @@ function renderSuggestion(state: SuggestionState): void {
 	const showWidget = mode === "widget" || mode === "both";
 	if (showGhost) state.renderGhost?.();
 	if (showWidget) renderWidget(state);
+}
+
+// A dim braille spinner drawn as ghost text at the caret while a suggestion
+// computes: it sits exactly where the suggestion will land and is replaced by
+// it. Ghost modes only; widget mode stays silent.
+export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+export const SPINNER_INTERVAL_MS = 150;
+
+/** Text the ghost overlay draws: the suggestion, else the spinner frame. */
+export function ghostText(state: SuggestionState): string {
+	return state.suggestion || state.spinner;
+}
+
+function startSpinner(state: SuggestionState): void {
+	stopSpinner(state);
+	if (state.renderMode === "widget" || !state.renderGhost) return;
+	let frame = 0;
+	state.spinner = SPINNER_FRAMES[0]!;
+	state.renderGhost();
+	state.spinnerTimer = setInterval(() => {
+		frame = (frame + 1) % SPINNER_FRAMES.length;
+		state.spinner = SPINNER_FRAMES[frame]!;
+		state.renderGhost?.();
+	}, SPINNER_INTERVAL_MS);
+	// Never keep the process alive just to animate.
+	(state.spinnerTimer as { unref?: () => void }).unref?.();
+}
+
+function stopSpinner(state: SuggestionState | undefined): void {
+	if (!state) return;
+	if (state.spinnerTimer !== undefined) {
+		clearInterval(state.spinnerTimer);
+		state.spinnerTimer = undefined;
+	}
+	if (state.spinner) {
+		state.spinner = "";
+		state.renderGhost?.();
+	}
 }
 
 /**
@@ -2251,7 +2292,7 @@ class GhostEditor extends CustomEditor {
 		// After a ghost failure this stays installed as a plain editor.
 		if (this.suggestionState.renderMode === "widget") return base;
 		try {
-			return overlayGhost(base, this.suggestionState.suggestion, width);
+			return overlayGhost(base, ghostText(this.suggestionState), width);
 		} catch {
 			// A ghost overlay failure must never break the editor's own render
 			// pass: surface the base lines and permanently fall back to widget
@@ -2392,7 +2433,7 @@ class DecoratingGhostEditor extends CustomEditor {
 			// The prior editor may render decorative prompt glyphs even when
 			// empty (pi-powerline-footer's `>`): vouch emptiness via its own
 			// text so the unfocused overlay branch cannot bail on them.
-			return overlayGhost(base, this.suggestionState.suggestion, width, {
+			return overlayGhost(base, ghostText(this.suggestionState), width, {
 				assumeEmpty: this.prior.getText().length === 0,
 			});
 		} catch {
@@ -2766,6 +2807,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		ref.inflight?.abort();
 		ref.inflight = undefined;
 		ref.computing = false;
+		stopSpinner(ref.state);
 		clearSuggestion(ref.state);
 	}
 
@@ -2926,11 +2968,16 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			setEditorText: (text) => ctx.ui.setEditorText(text),
 			publishWidget,
 			renderGhost: undefined,
+			spinner: "",
+			spinnerTimer: undefined,
 			fallbackToWidget: undefined,
 			ghostBuiltUnder: undefined,
 			abortInflight: () => {
 				ref.inflight?.abort();
 				ref.inflight = undefined;
+				// Input cancels the request; drop the spinner now rather than
+				// when the aborted call settles.
+				stopSpinner(state);
 			},
 			isComputing: () => ref.computing,
 		};
@@ -3247,6 +3294,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 
 		let resp: AssistantMessage | undefined;
 		ref.computing = true;
+		startSpinner(state);
 		try {
 			resp = await completeSuggestion(host, ctx, resolved.model, context, {
 				signal: ac.signal,
@@ -3263,6 +3311,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			return;
 		} finally {
 			ref.computing = false;
+			stopSpinner(state);
 		}
 		diag("complete_done", {
 			sr: resp?.stopReason,

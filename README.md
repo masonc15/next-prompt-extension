@@ -61,6 +61,13 @@ automatically, and the accept key doubles as the trigger —
 When `autoTrigger` is `true` (the default), the accept key still triggers a fresh
 computation whenever no suggestion is currently showing.
 
+## Generating indicator
+
+In `ghost` and `both` modes a dim braille spinner (`⠋⠙⠹…`) sits at the caret
+while a suggestion is being generated, exactly where the suggestion will
+appear, and the suggestion replaces it. Typing removes it at once, since input
+cancels the request. `widget` mode shows nothing while generating.
+
 ## Regenerate (`Shift-Right`)
 
 Don't like the suggestion? Press **`Shift-Right`** on an empty input box to

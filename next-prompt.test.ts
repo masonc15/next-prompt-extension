@@ -49,6 +49,8 @@ import {
 	overlayGhost,
 	parseModelOption,
 	regenerateKeyFor,
+	SPINNER_FRAMES,
+	SPINNER_INTERVAL_MS,
 	pickerVisibleRows,
 	pickItem,
 	projectTrustedForHost,
@@ -1552,6 +1554,8 @@ describe("real pi-tui editor integration", () => {
 			lastSuggestion: "",
 			acceptKey: "alt+/",
 			regenerateKey: "shift+right",
+			spinner: "",
+			spinnerTimer: undefined,
 			renderMode: "ghost",
 			rearmDelayMs: 2000,
 			rearmTimer: undefined,
@@ -3753,6 +3757,72 @@ describe("regenerate key", () => {
 		expect(regenerateKeyFor({ acceptKey: "right" })).toBe("shift+right");
 		expect(regenerateKeyFor({ acceptKey: "Shift+Right" })).toBe("");
 		expect(regenerateKeyFor({ regenerateKey: "alt+r" })).toBe("alt+r");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Spinner: dim braille frame at the caret while a suggestion computes
+// ---------------------------------------------------------------------------
+
+describe("generating spinner", () => {
+	const blankPrior = () => ({
+		focused: false,
+		render: (width: number) => [" ".repeat(width)],
+		handleInput: () => {},
+		getText: () => "",
+		setText: () => {},
+	});
+	const frameIn = (painted: string) => SPINNER_FRAMES.find((f) => painted.includes(f));
+
+	async function ghostSetup(renderMode: string) {
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			hasPriorEditor: true,
+			priorEditorFactory: blankPrior,
+			deferredComplete: true,
+		});
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ renderMode }),
+		);
+		await fake.handlers.get("session_start")!({}, fake.ctx);
+		const ed = fake.lastEditorComponent as unknown as { render: (w: number) => string[] };
+		return { fake, paint: () => (ed ? ed.render(60).join("\n") : "") };
+	}
+
+	test("SP1: ghost mode animates a frame at the caret, then the suggestion replaces it", async () => {
+		const { fake, paint } = await ghostSetup("ghost");
+		expect(frameIn(paint())).toBeUndefined();
+		void fake.handlers.get("agent_settled")!({}, fake.ctx);
+		await new Promise((r) => setTimeout(r, 0));
+		const first = frameIn(paint());
+		expect(first).toBe(SPINNER_FRAMES[0]);
+		await new Promise((r) => setTimeout(r, SPINNER_INTERVAL_MS * 2 + 20));
+		expect(frameIn(paint())).not.toBe(first);
+		fake.resolveComplete();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(paint()).toContain("suggestion");
+		expect(frameIn(paint())).toBeUndefined();
+	});
+
+	test("SP2: a keypress during generation removes the spinner immediately", async () => {
+		const { fake, paint } = await ghostSetup("ghost");
+		void fake.handlers.get("agent_settled")!({}, fake.ctx);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(frameIn(paint())).toBeDefined();
+		fake.inputHandler!("x");
+		expect(frameIn(paint())).toBeUndefined();
+	});
+
+	test("SP3: widget mode shows no spinner", async () => {
+		const { fake } = await ghostSetup("widget");
+		void fake.handlers.get("agent_settled")!({}, fake.ctx);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(fake.widgetContent).toBeUndefined();
+		fake.resolveComplete();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(fake.widgetContent?.[0] ?? "").toContain("suggestion");
 	});
 });
 
