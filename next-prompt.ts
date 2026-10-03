@@ -2185,23 +2185,28 @@ function makeInputHandler(
 		}
 
 		// Regenerate: drop the showing suggestion (if any) and compute a fresh
-		// one, on an idle, empty editor. Checked before the non-text pass-through
-		// below because key ids like shift+right arrive ESC-prefixed. Only the
-		// global listener can start a computation, so the editor-local fallback
-		// (no onManualTrigger) lets the key fall through.
+		// one, on an idle editor that is empty or still holds the accepted,
+		// unedited suggestion (that text is cleared; anything the user typed or
+		// changed is left alone). Checked before the non-text pass-through below
+		// because key ids like shift+right arrive ESC-prefixed. Only the global
+		// listener can start a computation, so the editor-local fallback (no
+		// onManualTrigger) lets the key fall through.
 		const isRegenerateKey =
 			state.regenerateKey !== "" &&
 			(matchesKey(data, state.regenerateKey as KeyId) ||
 				matchesAcceptKeyRaw(data, state.regenerateKey));
+		const holdsAccepted =
+			editorTextBefore.length > 0 && editorTextBefore === state.lastSuggestion;
 		if (
 			isRegenerateKey &&
 			onManualTrigger &&
 			state.isIdleGetter() &&
-			editorTextBefore.length === 0
+			(editorTextBefore.length === 0 || holdsAccepted)
 		) {
 			if (state.isComputing()) return { consume: true };
-			diag("regenerate", { showing: Boolean(state.suggestion) });
+			diag("regenerate", { showing: Boolean(state.suggestion), accepted: holdsAccepted });
 			dismissSuggestion(state);
+			if (holdsAccepted) state.setEditorText("");
 			markGlobalInput();
 			onManualTrigger();
 			return { consume: true };

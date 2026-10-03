@@ -3714,6 +3714,26 @@ describe("regenerate key", () => {
 		expect(fake.calls.complete).toHaveLength(1);
 	});
 
+	test("G7: shift+right over an accepted, unedited suggestion clears it and regenerates", async () => {
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			completeResult: { content: [{ type: "text", text: "first idea" }], stopReason: "stop" },
+		});
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		fake.inputHandler!("\x1b/");
+		expect(fake.editorText).toBe("first idea");
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+		expect(fake.editorText).toBe("");
+		expect(fake.calls.complete).toHaveLength(2);
+		// Once edited, the text is the user's: shift+right leaves it alone.
+		await new Promise((r) => setTimeout(r, 0));
+		fake.inputHandler!("\x1b/");
+		fake.setEditorText("first idea, edited");
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toBeUndefined();
+		expect(fake.editorText).toBe("first idea, edited");
+		expect(fake.calls.complete).toHaveLength(2);
+	});
+
 	test("G3: shift+right with text in the editor passes through", async () => {
 		const { fake } = await setup({ branch: [assistantEntry("a")] });
 		fake.setEditorText("typing");
