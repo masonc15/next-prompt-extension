@@ -24,7 +24,7 @@ import {
 	getKeybindings,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { CustomEditor } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, CustomEditor } from "@earendil-works/pi-coding-agent";
 import type { Api, AssistantMessage } from "@earendil-works/pi-ai";
 
 import {
@@ -3935,6 +3935,88 @@ describe("regenerate key", () => {
 		expect(regenerateKeyFor({ acceptKey: "right" })).toBe("shift+right");
 		expect(regenerateKeyFor({ acceptKey: "Shift+Right" })).toBe("");
 		expect(regenerateKeyFor({ regenerateKey: "alt+r" })).toBe("alt+r");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// systemPromptFile: the system prompt lives in its own plain-text file
+// ---------------------------------------------------------------------------
+
+describe("systemPromptFile", () => {
+	const prompt = "line one\n\n- a bullet\n- another\n";
+
+	test("PF1: a relative path resolves against the agent dir and wins over inline systemPrompt", async () => {
+		writeFile(tmpHome, "my-prompt.md", prompt);
+		writeFile(
+			tmpHome,
+			"next-prompt.json",
+			JSON.stringify({ systemPromptFile: "my-prompt.md", systemPrompt: "inline" }),
+		);
+		const cwd = mkdtempSync(join(tmpdir(), "np-pf-"));
+		expect(loadEffectiveConfig(cwd).systemPrompt).toBe("line one\n\n- a bullet\n- another");
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(fake.calls.complete[0]!.systemPrompt).toBe("line one\n\n- a bullet\n- another");
+		// Edits apply on the next load, no reload needed.
+		writeFile(tmpHome, "my-prompt.md", "edited\n");
+		expect(loadEffectiveConfig(cwd).systemPrompt).toBe("edited");
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("PF2: absolute paths work; a missing or empty file falls back and reports it", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "np-pf-"));
+		const abs = join(cwd, "abs-prompt.txt");
+		writeFileSync(abs, prompt);
+		writeFile(tmpHome, "next-prompt.json", JSON.stringify({ systemPromptFile: abs }));
+		expect(loadEffectiveConfig(cwd).systemPrompt).toBe("line one\n\n- a bullet\n- another");
+
+		writeFile(
+			tmpHome,
+			"next-prompt.json",
+			JSON.stringify({ systemPromptFile: "nope.md", systemPrompt: "inline" }),
+		);
+		const missing = loadEffectiveConfig(cwd);
+		expect(missing.systemPrompt).toBe("inline");
+		expect(missing.systemPromptFileError).toContain("nope.md");
+		expect(missing.computeDisabled).toBe(false);
+
+		writeFile(tmpHome, "empty.md", "  \n");
+		writeFile(tmpHome, "next-prompt.json", JSON.stringify({ systemPromptFile: "empty.md" }));
+		const empty = loadEffectiveConfig(cwd);
+		expect(empty.systemPrompt).toBeUndefined();
+		expect(empty.systemPromptFileError).toContain("empty");
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("PF3: a project config cannot set systemPromptFile", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "np-pf-"));
+		writeFileSync(join(cwd, "secret.txt"), "do not send");
+		mkdirSync(join(cwd, CONFIG_DIR_NAME), { recursive: true });
+		writeFileSync(
+			join(cwd, CONFIG_DIR_NAME, "next-prompt.json"),
+			JSON.stringify({ systemPromptFile: join(cwd, "secret.txt") }),
+		);
+		const cfg = loadEffectiveConfig(cwd);
+		expect(cfg.projectTrusted).toBe(true);
+		expect(cfg.systemPrompt).toBeUndefined();
+		expect(cfg.systemPromptFile).toBeUndefined();
+		// The same file set inline in the project config is still honored.
+		writeFileSync(
+			join(cwd, CONFIG_DIR_NAME, "next-prompt.json"),
+			JSON.stringify({ systemPrompt: "project inline" }),
+		);
+		expect(loadEffectiveConfig(cwd).systemPrompt).toBe("project inline");
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("PF4: a broken prompt file is surfaced once per session", async () => {
+		writeFile(tmpHome, "next-prompt.json", JSON.stringify({ systemPromptFile: "gone.md" }));
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		const notes = fake.calls.notifies.filter(([m]) => m.includes("gone.md"));
+		expect(notes).toHaveLength(1);
+		expect(fake.calls.complete.length).toBeGreaterThan(0);
 	});
 });
 

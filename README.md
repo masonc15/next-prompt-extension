@@ -230,6 +230,7 @@ comes from the host's `CONFIG_DIR_NAME`:
 | `renderMode` | `"widget"` | `"widget"` (below-editor line), `"ghost"` (inline greyed text in the box), or `"both"` (inline ghost + below-editor widget). On OMP, `ghost`/`both` work too (see the editor-coexistence note above). |
 | `rearmDelayMs` | `2000` | Delay (ms) before re-arming the last suggestion after the user deletes back to empty. No new model call. |
 | `systemPrompt` | built-in extractor | Config-file only (not prompted by `/next-prompt-config`). See `SYSTEM_PROMPT` in `next-prompt.ts`. |
+| `systemPromptFile` | — | Path to a plain-text or markdown file holding the system prompt, so it can be written without JSON escaping. Relative paths resolve against the agent dir (`~/.pi/agent`); `~/` expands to your home. Re-read every turn, so edits apply without `/reload`. Wins over an inline `systemPrompt`; if the file is missing or empty, you get one warning and the inline or built-in prompt is used. Global config only. |
 | `maxTranscriptChars` | `12000` | Tail-truncation of the conversation transcript sent to the model. |
 | `maxRecentTurns` | all | Disclosure minimization: only the last N user/assistant turns are sent (tool results are never sent regardless). Invalid values fail closed — suggestions are disabled. |
 | `maxSuggestionChars` | `240` | Cap on the returned suggestion length (visible width; a hard code-point bound of 4× this value also applies, so zero-width payloads cannot bypass the cap). |

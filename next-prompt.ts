@@ -71,7 +71,8 @@ import {
 	statSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { homedir } from "node:os";
 
 import {
 	CONFIG_DIR_NAME,
@@ -190,6 +191,15 @@ export interface NextPromptConfig {
 	/** How the suggestion is shown. "widget" (default) = below-editor line; "ghost" = inline overlay in the input box. */
 	renderMode?: RenderMode;
 	systemPrompt?: string;
+	/**
+	 * Path to a plain-text file holding the system prompt, so it can be
+	 * written and edited without JSON escaping. Relative paths resolve against
+	 * the agent dir; `~/` expands to the home directory. Re-read on every load,
+	 * so edits apply on the next turn. Wins over an inline `systemPrompt` in
+	 * the same file. Global config only: a project file could otherwise send
+	 * any local file to the model.
+	 */
+	systemPromptFile?: string;
 	maxTranscriptChars?: number;
 	maxSuggestionChars?: number;
 	/**
@@ -243,6 +253,8 @@ export interface EffectiveConfig extends NextPromptConfig {
 	projectTrusted: boolean;
 	/** True when invalid privacy-bearing fields caused compute to be disabled. */
 	computeDisabled: boolean;
+	/** Why `systemPromptFile` could not be used (the prompt fell back), if it failed. */
+	systemPromptFileError?: string;
 }
 
 export interface DestinationIdentity {
@@ -419,10 +431,34 @@ export function loadConfig(
  * Config load with status: returns the merged (floors-applied) config plus a
  * fail-closed flag raised when a privacy-bearing field was invalid.
  */
+/**
+ * Read the global `systemPromptFile` into `cfg.systemPrompt`. On failure the
+ * inline prompt (or the built-in default) stays and the reason is returned.
+ */
+export function applySystemPromptFile(cfg: NextPromptConfig): string | undefined {
+	const raw = cfg.systemPromptFile;
+	if (!raw) return undefined;
+	const path = raw.startsWith("~/")
+		? join(homedir(), raw.slice(2))
+		: isAbsolute(raw)
+			? raw
+			: join(getAgentDir(), raw);
+	let text: string;
+	try {
+		text = readFileSync(path, "utf-8");
+	} catch (err) {
+		return `cannot read systemPromptFile ${raw}: ${(err as NodeJS.ErrnoException).code ?? err}`;
+	}
+	const prompt = text.replace(/^\uFEFF/, "").trim();
+	if (!prompt) return `systemPromptFile ${raw} is empty`;
+	cfg.systemPrompt = prompt;
+	return undefined;
+}
+
 export function loadConfigDetailed(
 	cwd: string,
 	opts: { projectTrusted?: boolean; trustAvailable?: boolean } = {},
-): { cfg: NextPromptConfig; computeDisabled: boolean } {
+): { cfg: NextPromptConfig; computeDisabled: boolean; systemPromptFileError?: string } {
 	const globalPath = join(getAgentDir(), "next-prompt.json");
 	const projectPath = join(cwd, CONFIG_DIR_NAME, "next-prompt.json");
 	const projectTrusted = opts.projectTrusted ?? true;
@@ -473,6 +509,16 @@ export function loadConfigDetailed(
 	//    able to silently authorize a new destination (Step 4 acceptance).
 	//  - allowCrossProvider: project may tighten to false, never loosen a global false.
 	//  - maxTranscriptChars: project may reduce, never increase a global cap.
+	// systemPromptFile is GLOBAL-ONLY: resolve it into the global prompt before
+	// the merge, so a trusted project's inline systemPrompt still overrides.
+	if (projectCfg.systemPromptFile !== undefined) {
+		console.warn(
+			`next-prompt: systemPromptFile is only read from the global config; ignoring the project value`,
+		);
+		delete projectCfg.systemPromptFile;
+	}
+	const systemPromptFileError = applySystemPromptFile(globalCfg);
+	if (systemPromptFileError) console.warn(`next-prompt: ${systemPromptFileError}`);
 	const merged: NextPromptConfig = { ...globalCfg, ...projectCfg };
 	merged.allowCrossProviderPairs = globalCfg.allowCrossProviderPairs;
 	if (globalCfg.allowCrossProvider === false) {
@@ -497,7 +543,11 @@ export function loadConfigDetailed(
 		);
 		delete merged.regenerateKey;
 	}
-	return { cfg: merged, computeDisabled: globalInvalid || projectInvalid };
+	return {
+		cfg: merged,
+		computeDisabled: globalInvalid || projectInvalid,
+		systemPromptFileError,
+	};
 }
 
 /**
@@ -587,6 +637,11 @@ function parseConfig(text: string): {
 			case "systemPrompt":
 				if (typeof value !== "string") failPrivacy("must be a string");
 				else cfg.systemPrompt = value;
+				break;
+			case "systemPromptFile":
+				if (typeof value !== "string" || value.trim().length === 0)
+					console.warn(`next-prompt: invalid systemPromptFile in config; ignoring`);
+				else cfg.systemPromptFile = value.trim();
 				break;
 			case "allowCrossProvider":
 				if (typeof value !== "boolean") failPrivacy("must be a boolean");
@@ -737,12 +792,13 @@ export function loadEffectiveConfig(
 	opts: { projectTrusted?: boolean; trustAvailable?: boolean } = {},
 ): EffectiveConfig {
 	const projectTrusted = opts.projectTrusted ?? true;
-	const { cfg, computeDisabled } = loadConfigDetailed(cwd, {
+	const { cfg, computeDisabled, systemPromptFileError } = loadConfigDetailed(cwd, {
 		projectTrusted,
 		trustAvailable: opts.trustAvailable ?? true,
 	});
 	return {
 		...cfg,
+		systemPromptFileError,
 		allowCrossProvider: cfg.allowCrossProvider ?? DEFAULT_ALLOW_CROSS_PROVIDER,
 		autoTrigger: cfg.autoTrigger ?? DEFAULT_AUTO_TRIGGER,
 		projectTrusted,
@@ -3236,6 +3292,16 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			});
 			diagEnabled = effective.debug === true;
 			diagMaxBytes = effective.debugMaxBytes;
+			if (
+				effective.systemPromptFileError &&
+				!shownDiagnostics.has(`prompt-file:${effective.systemPromptFileError}`)
+			) {
+				shownDiagnostics.add(`prompt-file:${effective.systemPromptFileError}`);
+				ctx.ui.notify(
+					`next-prompt: ${effective.systemPromptFileError}; using the ${effective.systemPrompt ? "inline" : "built-in"} prompt`,
+					"warning",
+				);
+			}
 			if (effective.computeDisabled) {
 				diag("skip", { why: "compute_disabled", source });
 				return;
