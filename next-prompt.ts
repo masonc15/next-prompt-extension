@@ -3401,7 +3401,10 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 
 		let resp: AssistantMessage | undefined;
 		ref.computing = true;
-		startSpinner(state);
+		// Only requests the user asked for (accept-key trigger, regenerate,
+		// redo) get the spinner; the automatic one after a response stays
+		// silent so the suggestion never announces itself.
+		if (manual) startSpinner(state);
 		try {
 			resp = await completeSuggestion(host, ctx, resolved.model, context, {
 				signal: ac.signal,

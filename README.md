@@ -64,8 +64,10 @@ computation whenever no suggestion is currently showing.
 ## Generating indicator
 
 In `ghost` and `both` modes a dim braille spinner (`⠋⠙⠹…`) sits at the caret
-while a suggestion is being generated, exactly where the suggestion will
-appear, and the suggestion replaces it. Typing removes it at once, since input
+while a suggestion you asked for is being generated (accept-key trigger,
+regenerate, or redo), exactly where the suggestion will appear, and the
+suggestion replaces it. The automatic suggestion after each response shows no
+spinner. Typing removes it at once, since input
 cancels the request. `widget` mode shows nothing while generating.
 
 ## Regenerate (`Shift-Right`)

@@ -3916,7 +3916,7 @@ describe("generating spinner", () => {
 	test("SP1: ghost mode animates a frame at the caret, then the suggestion replaces it", async () => {
 		const { fake, paint } = await ghostSetup("ghost");
 		expect(frameIn(paint())).toBeUndefined();
-		void fake.handlers.get("agent_settled")!({}, fake.ctx);
+		fake.inputHandler!("\x1b/");
 		await new Promise((r) => setTimeout(r, 0));
 		const first = frameIn(paint());
 		expect(first).toBe(SPINNER_FRAMES[0]);
@@ -3930,7 +3930,7 @@ describe("generating spinner", () => {
 
 	test("SP2: a keypress during generation removes the spinner immediately", async () => {
 		const { fake, paint } = await ghostSetup("ghost");
-		void fake.handlers.get("agent_settled")!({}, fake.ctx);
+		fake.inputHandler!("\x1b/");
 		await new Promise((r) => setTimeout(r, 0));
 		expect(frameIn(paint())).toBeDefined();
 		fake.inputHandler!("x");
@@ -4027,6 +4027,19 @@ describe("generating spinner", () => {
 		expect(fake.inputHandler!("\x1b[45;5u")).toBeUndefined();
 		expect(signal?.aborted).toBe(true);
 		expect(frameIn(paint())).toBeUndefined();
+	});
+
+	test("SP9: the automatic suggestion after a response shows no spinner", async () => {
+		const { fake, paint } = await ghostSetup("ghost");
+		void fake.handlers.get("agent_settled")!({}, fake.ctx);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(fake.calls.complete).toHaveLength(1);
+		expect(frameIn(paint())).toBeUndefined();
+		await new Promise((r) => setTimeout(r, SPINNER_INTERVAL_MS + 20));
+		expect(frameIn(paint())).toBeUndefined();
+		fake.resolveComplete();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(paint()).toContain("suggestion");
 	});
 
 	test("SP3: widget mode shows no spinner", async () => {
