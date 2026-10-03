@@ -154,6 +154,12 @@ export interface NextPromptConfig {
 	serviceTier?: ServiceTier;
 	/** Key id that accepts the suggestion (any pi-tui KeyId). Defaults to "alt+/". */
 	acceptKey?: string;
+	/**
+	 * Key id that replaces the showing suggestion with a freshly computed one
+	 * (or computes one when nothing is showing). Defaults to "shift+right";
+	 * ignored when it equals acceptKey.
+	 */
+	regenerateKey?: string;
 	/** How the suggestion is shown. "widget" (default) = below-editor line; "ghost" = inline overlay in the input box. */
 	renderMode?: RenderMode;
 	systemPrompt?: string;
@@ -268,6 +274,14 @@ export interface SuggestionCtx {
 const DEFAULT_MAX_TRANSCRIPT = 12000;
 const DEFAULT_MAX_SUGGESTION = 240;
 export const DEFAULT_ACCEPT_KEY = "alt+/";
+export const DEFAULT_REGENERATE_KEY = "shift+right";
+
+/** Effective regenerate key; "" (disabled) when it would shadow the accept key. */
+export function regenerateKeyFor(cfg: NextPromptConfig): string {
+	const key = cfg.regenerateKey ?? DEFAULT_REGENERATE_KEY;
+	const accept = cfg.acceptKey ?? DEFAULT_ACCEPT_KEY;
+	return key.trim().toLowerCase() === accept.trim().toLowerCase() ? "" : key;
+}
 export const DEFAULT_REARM_MS = 2000;
 export const DEFAULT_AUTO_TRIGGER = true;
 
@@ -437,6 +451,17 @@ export function loadConfigDetailed(
 				: globalCfg.maxTranscriptChars,
 		);
 	}
+	// One key cannot both accept and regenerate; accept wins.
+	if (
+		merged.regenerateKey !== undefined &&
+		merged.regenerateKey.trim().toLowerCase() ===
+			(merged.acceptKey ?? DEFAULT_ACCEPT_KEY).trim().toLowerCase()
+	) {
+		console.warn(
+			`next-prompt: regenerateKey "${merged.regenerateKey}" is the accept key; ignoring`,
+		);
+		delete merged.regenerateKey;
+	}
 	return { cfg: merged, computeDisabled: globalInvalid || projectInvalid };
 }
 
@@ -449,6 +474,7 @@ const PROJECT_PREFERENCE_KEYS = [
 	"thinking",
 	"renderMode",
 	"acceptKey",
+	"regenerateKey",
 	"rearmDelayMs",
 	"maxSuggestionChars",
 	"maxRecentTurns",
@@ -610,6 +636,15 @@ function parseConfig(text: string): {
 						`next-prompt: acceptKey "tab" conflicts with autocomplete; ignoring`,
 					);
 				else cfg.acceptKey = value;
+				break;
+			case "regenerateKey":
+				if (typeof value !== "string" || value.trim().length === 0)
+					console.warn(`next-prompt: invalid regenerateKey in config; ignoring`);
+				else if (value.trim().toLowerCase() === "tab")
+					console.warn(
+						`next-prompt: regenerateKey "tab" conflicts with autocomplete; ignoring`,
+					);
+				else cfg.regenerateKey = value;
 				break;
 			case "autoTrigger":
 				if (typeof value !== "boolean")
@@ -1786,6 +1821,8 @@ export interface SuggestionState {
 	suggestion: string;
 	lastSuggestion: string;
 	acceptKey: string;
+	/** Replaces the showing suggestion with a fresh one; "" disables. */
+	regenerateKey: string;
 	renderMode: RenderMode;
 	rearmDelayMs: number;
 	rearmTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2089,6 +2126,28 @@ function makeInputHandler(
 			// press (no-op — never two concurrent requests); otherwise compute one.
 			if (state.isComputing()) return { consume: true };
 			onManualTrigger?.();
+			return { consume: true };
+		}
+
+		// Regenerate: drop the showing suggestion (if any) and compute a fresh
+		// one, on an idle, empty editor. Checked before the non-text pass-through
+		// below because key ids like shift+right arrive ESC-prefixed. Only the
+		// global listener can start a computation, so the editor-local fallback
+		// (no onManualTrigger) lets the key fall through.
+		const isRegenerateKey =
+			state.regenerateKey !== "" &&
+			(matchesKey(data, state.regenerateKey as KeyId) ||
+				matchesAcceptKeyRaw(data, state.regenerateKey));
+		if (
+			isRegenerateKey &&
+			onManualTrigger &&
+			state.isIdleGetter() &&
+			editorTextBefore.length === 0
+		) {
+			if (state.isComputing()) return { consume: true };
+			dismissSuggestion(state);
+			markGlobalInput();
+			onManualTrigger();
 			return { consume: true };
 		}
 
@@ -2856,6 +2915,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			suggestion: "",
 			lastSuggestion: "",
 			acceptKey: effective.acceptKey ?? DEFAULT_ACCEPT_KEY,
+			regenerateKey: regenerateKeyFor(effective),
 			renderMode,
 			rearmDelayMs: effective.rearmDelayMs ?? DEFAULT_REARM_MS,
 			rearmTimer: undefined,

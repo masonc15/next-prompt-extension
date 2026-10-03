@@ -61,6 +61,17 @@ automatically, and the accept key doubles as the trigger —
 When `autoTrigger` is `true` (the default), the accept key still triggers a fresh
 computation whenever no suggestion is currently showing.
 
+## Regenerate (`Shift-Right`)
+
+Don't like the suggestion? Press **`Shift-Right`** on an empty input box to
+throw it away and compute a fresh one, without accepting it first. With nothing
+showing it computes one, like the manual trigger. A press while a suggestion is
+still being generated is ignored, and with text in the box the key goes to the
+editor as usual. Each press is a new model call.
+
+Change it with `regenerateKey`. It is ignored when it matches `acceptKey`; so if
+you set `acceptKey` to `"shift+right"`, pick another `regenerateKey`.
+
 ## Install
 
 Pi and OMP auto-discover extensions from standard locations.
@@ -192,6 +203,7 @@ comes from the host's `CONFIG_DIR_NAME`:
 | `thinking` | unset | Reasoning level for the suggestion model: `"minimal"`/`"low"`/`"medium"`/`"high"`/`"xhigh"`/`"max"`. Set `"low"` for faster suggestions. Passed as `reasoning` to the model call. |
 | `serviceTier` | unset | OpenAI `service_tier` for the suggestion call: `"auto"`/`"default"`/`"flex"`/`"priority"` (`"priority"` is Codex/OpenAI fast mode, billed at about 2× standard). Sent only to `openai-responses` and `openai-codex-responses` models; other providers never see it. Config-file only. |
 | `acceptKey` | `"alt+/"` | Any pi-tui `KeyId` (e.g. `"alt+/"`, `"ctrl+space"`, `"shift+enter"`). Intercepted **before** the base editor, so keys like `ctrl+space` (`\x00`) won't pollute the box. Accept only fires when a suggestion is showing and the autocomplete dropdown is closed. |
+| `regenerateKey` | `"shift+right"` | Any pi-tui `KeyId`. On an idle, empty input box, replaces the showing suggestion with a freshly computed one (or computes one when nothing is showing). Ignored when it equals `acceptKey`. |
 | `autoTrigger` | `true` | When `true` (default), suggestions are computed automatically after every settled turn. When `false`, manual-only: the accept key doubles as the manual trigger (first press generates, second press accepts, in-flight press is a no-op). |
 | `renderMode` | `"widget"` | `"widget"` (below-editor line), `"ghost"` (inline greyed text in the box), or `"both"` (inline ghost + below-editor widget). On OMP, `ghost`/`both` work too (see the editor-coexistence note above). |
 | `rearmDelayMs` | `2000` | Delay (ms) before re-arming the last suggestion after the user deletes back to empty. No new model call. |

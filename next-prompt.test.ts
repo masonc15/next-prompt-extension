@@ -48,6 +48,7 @@ import {
 	MAX_SESSION_ID_CHARS,
 	overlayGhost,
 	parseModelOption,
+	regenerateKeyFor,
 	pickerVisibleRows,
 	pickItem,
 	projectTrustedForHost,
@@ -1550,6 +1551,7 @@ describe("real pi-tui editor integration", () => {
 			suggestion: "",
 			lastSuggestion: "",
 			acceptKey: "alt+/",
+			regenerateKey: "shift+right",
 			renderMode: "ghost",
 			rearmDelayMs: 2000,
 			rearmTimer: undefined,
@@ -3678,6 +3680,79 @@ describe("manual trigger (autoTrigger off)", () => {
 		expect(fake.inputHandler!("\x1b/")).toEqual({ consume: true });
 		expect(fake.editorText).toBe("next thing");
 		expect(fake.widgetContent).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Regenerate key: replace the showing suggestion with a fresh one
+// ---------------------------------------------------------------------------
+
+const SHIFT_RIGHT = "\x1b[1;2C";
+
+describe("regenerate key", () => {
+	test("G1: shift+right over a showing suggestion computes a new one without accepting", async () => {
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			completeResult: { content: [{ type: "text", text: "first idea" }], stopReason: "stop" },
+		});
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(fake.widgetContent?.[0] ?? "").toContain("first idea");
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+		expect(fake.calls.complete).toHaveLength(2);
+		expect(fake.editorText).toBe("");
+		await new Promise((r) => setTimeout(r, 0));
+		expect(fake.widgetContent?.[0] ?? "").toContain("first idea");
+	});
+
+	test("G2: shift+right with nothing showing computes a suggestion", async () => {
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+		expect(fake.calls.complete).toHaveLength(1);
+	});
+
+	test("G3: shift+right with text in the editor passes through", async () => {
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		fake.setEditorText("typing");
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toBeUndefined();
+		expect(fake.calls.complete).toHaveLength(0);
+	});
+
+	test("G4: shift+right while a suggestion is computing is ignored", async () => {
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			deferredComplete: true,
+		});
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+		expect(fake.calls.complete).toHaveLength(1);
+	});
+
+	test("G5: regenerateKey is configurable and may not equal acceptKey", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "np-regen-"));
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ regenerateKey: "alt+r" }),
+		);
+		expect(loadConfig(cwd).regenerateKey).toBe("alt+r");
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		expect(fake.inputHandler!("\x1br")).toEqual({ consume: true });
+		expect(fake.calls.complete).toHaveLength(1);
+
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ acceptKey: "right", regenerateKey: "right" }),
+		);
+		expect(loadConfig(cwd).regenerateKey).toBeUndefined();
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("G6: the default regenerate key is disabled when it is the accept key", () => {
+		expect(regenerateKeyFor({})).toBe("shift+right");
+		expect(regenerateKeyFor({ acceptKey: "right" })).toBe("shift+right");
+		expect(regenerateKeyFor({ acceptKey: "Shift+Right" })).toBe("");
+		expect(regenerateKeyFor({ regenerateKey: "alt+r" })).toBe("alt+r");
 	});
 });
 
