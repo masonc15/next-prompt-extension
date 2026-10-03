@@ -3936,6 +3936,22 @@ describe("generating spinner", () => {
 		expect(fake.calls.complete).toHaveLength(1);
 	});
 
+	test("SP8: undo during a regenerate cancels the request and the spinner", async () => {
+		const { fake, paint } = await ghostSetup("ghost");
+		fake.setEditorText("my draft");
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+		expect(fake.editorText).toBe("");
+		await new Promise((r) => setTimeout(r, 0));
+		expect(frameIn(paint())).toBeDefined();
+		const signal = (fake.calls.complete[0] as { signal?: AbortSignal }).signal;
+		// Ctrl+- (pi-tui's tui.editor.undo) goes on to the editor, which
+		// restores the draft; the extension must drop its request.
+		// Ghostty (kitty keyboard protocol) sends it as CSI 45;5u.
+		expect(fake.inputHandler!("\x1b[45;5u")).toBeUndefined();
+		expect(signal?.aborted).toBe(true);
+		expect(frameIn(paint())).toBeUndefined();
+	});
+
 	test("SP3: widget mode shows no spinner", async () => {
 		const { fake } = await ghostSetup("widget");
 		void fake.handlers.get("agent_settled")!({}, fake.ctx);

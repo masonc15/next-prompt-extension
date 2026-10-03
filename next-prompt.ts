@@ -2232,7 +2232,14 @@ function makeInputHandler(
 		// approval is only fail-closed if the input that preceded it already
 		// bumped the generation. An unrecognized non-text byte simply falls
 		// through and dismisses, which is the behaviour without this branch.
-		if (editorTextBefore.length === 0 && isNonTextInput(data)) {
+		//
+		// Undo is the exception: it can put text back into an empty editor
+		// (after a regenerate cleared a draft), so it must cancel like typing.
+		if (
+			editorTextBefore.length === 0 &&
+			isNonTextInput(data) &&
+			!getKeybindings().matches(data, "tui.editor.undo")
+		) {
 			markGlobalInput();
 			return undefined;
 		}

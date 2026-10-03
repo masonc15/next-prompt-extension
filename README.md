@@ -73,7 +73,9 @@ cancels the request. `widget` mode shows nothing while generating.
 Don't like the suggestion? Press **`Shift-Right`** to throw it away and compute
 a fresh one. Anything in the input box is cleared first, whether it's a showing
 suggestion, an accepted one, or text you typed. A press while a suggestion is
-still being generated is ignored. If the new suggestion comes back identical,
+still being generated is ignored. Cleared text is one undo away: press
+**`Ctrl+-`** (Pi's editor undo) to get your draft back, which also cancels the
+new suggestion. If the new suggestion comes back identical,
 a short "regenerated the same suggestion" note says so. Each press is a new
 model call.
 
