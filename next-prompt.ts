@@ -2150,6 +2150,7 @@ function makeInputHandler(
 			// Accept: fill the editor, keep the suggestion cached for delete-to-empty
 			// re-arm, clear the widget, bump the input generation (invalidates any
 			// in-flight compute), and remember there is nothing to delete yet.
+			diag("accept", { len: state.suggestion.length });
 			state.lastSuggestion = state.suggestion;
 			state.suggestion = "";
 			state.inputGeneration += 1;
@@ -2166,6 +2167,11 @@ function makeInputHandler(
 			// (autoTrigger: false). If one is already being generated, ignore the
 			// press (no-op — never two concurrent requests); otherwise compute one.
 			if (state.isComputing()) return { consume: true };
+			diag("manual_trigger");
+			// A pending delete-to-empty re-show would paint the old suggestion
+			// over the spinner mid-generation; the fresh request supersedes it.
+			clearRearmTimer(state);
+			clearRearmCheckTimer(state);
 			onManualTrigger?.();
 			return { consume: true };
 		}
@@ -2186,6 +2192,7 @@ function makeInputHandler(
 			editorTextBefore.length === 0
 		) {
 			if (state.isComputing()) return { consume: true };
+			diag("regenerate", { showing: Boolean(state.suggestion) });
 			dismissSuggestion(state);
 			markGlobalInput();
 			onManualTrigger();
@@ -2754,7 +2761,7 @@ function diag(event: string, fields: Record<string, unknown> = {}): void {
 	try {
 		appendDiagLine(
 			join(getAgentDir(), "next-prompt-debug.log"),
-			JSON.stringify({ t: new Date().toISOString(), event, ...fields }) + "\n",
+			JSON.stringify({ t: new Date().toISOString(), pid: process.pid, event, ...fields }) + "\n",
 		);
 	} catch {
 		/* best effort */

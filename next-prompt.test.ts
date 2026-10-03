@@ -3815,6 +3815,52 @@ describe("generating spinner", () => {
 		expect(frameIn(paint())).toBeUndefined();
 	});
 
+	test("SP4: regenerating over a showing suggestion shows the spinner", async () => {
+		const { fake, paint } = await ghostSetup("ghost");
+		void fake.handlers.get("agent_settled")!({}, fake.ctx);
+		await new Promise((r) => setTimeout(r, 0));
+		fake.resolveComplete();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(paint()).toContain("suggestion");
+		expect(fake.inputHandler!(SHIFT_RIGHT)).toEqual({ consume: true });
+		await new Promise((r) => setTimeout(r, 0));
+		expect(fake.calls.complete).toHaveLength(2);
+		expect(paint()).not.toContain("suggestion");
+		expect(frameIn(paint())).toBeDefined();
+	});
+
+	test("SP5: a pending re-show of the old suggestion cannot cover a manual request", async () => {
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ renderMode: "ghost" }),
+		);
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			hasPriorEditor: true,
+			priorEditorFactory: blankPrior,
+			deferredComplete: true,
+		});
+		await fake.handlers.get("session_start")!({}, fake.ctx);
+		const ed = fake.lastEditorComponent as unknown as { render: (w: number) => string[] };
+		const paint = () => ed.render(60).join("\n");
+		void fake.handlers.get("agent_settled")!({}, fake.ctx);
+		await new Promise((r) => setTimeout(r, 0));
+		fake.resolveComplete();
+		await new Promise((r) => setTimeout(r, 0));
+		// Accept, then delete back to empty: this arms the re-show.
+		fake.inputHandler!("\x1b/");
+		expect(fake.editorText).toBe("suggestion");
+		fake.inputHandler!("\x7f");
+		fake.setEditorText("");
+		// Manual trigger before the re-show fires, then wait past the default
+		// 2 s re-arm delay.
+		expect(fake.inputHandler!("\x1b/")).toEqual({ consume: true });
+		await new Promise((r) => setTimeout(r, 2300));
+		expect(paint()).not.toContain("suggestion");
+		expect(frameIn(paint())).toBeDefined();
+	});
+
 	test("SP3: widget mode shows no spinner", async () => {
 		const { fake } = await ghostSetup("widget");
 		void fake.handlers.get("agent_settled")!({}, fake.ctx);
