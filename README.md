@@ -61,6 +61,13 @@ automatically, and the accept key doubles as the trigger —
 When `autoTrigger` is `true` (the default), the accept key still triggers a fresh
 computation whenever no suggestion is currently showing.
 
+The automatic suggestion may abstain: when nothing clearly comes next, the
+model answers `NONE` and nothing appears. A suggestion you ask for (accept-key
+trigger, regenerate, or redo) works differently. Since the key press already
+says you want one, the system prompt, built-in or your own, gets one extra
+paragraph telling the model not to answer `NONE`. If it answers `NONE` anyway,
+you get a short "no suggestion" notice instead of a key that seems to do nothing.
+
 ## Generating indicator
 
 In `ghost` and `both` modes a dim braille spinner (`⠋⠙⠹…`) sits at the caret

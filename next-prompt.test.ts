@@ -65,6 +65,7 @@ import {
 	tierFor,
 	suggestionMaxTokens,
 	SYSTEM_PROMPT,
+	MANUAL_REQUEST_ADDENDUM,
 	THINKING_OPTIONS,
 	type BranchEntry,
 	type NextPromptConfig,
@@ -3733,6 +3734,65 @@ describe("manual trigger (autoTrigger off)", () => {
 		expect(fake.inputHandler!("\x1b/")).toEqual({ consume: true });
 		expect(fake.editorText).toBe("next thing");
 		expect(fake.widgetContent).toBeUndefined();
+	});
+
+	test("M5: a requested suggestion tells the model not to answer NONE", async () => {
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ autoTrigger: false, systemPrompt: "custom prompt" }),
+		);
+		await fake.handlers.get("session_start")!({}, fake.ctx);
+		fake.inputHandler!("\x1b/");
+		expect(fake.calls.complete[0]!.systemPrompt).toBe(
+			`custom prompt\n\n${MANUAL_REQUEST_ADDENDUM}`,
+		);
+		expect(MANUAL_REQUEST_ADDENDUM).toContain("Do not reply NONE");
+	});
+
+	test("M6: the automatic suggestion keeps the prompt unchanged", async () => {
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ systemPrompt: "custom prompt" }),
+		);
+		await fake.handlers.get("session_start")!({}, fake.ctx);
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(fake.calls.complete[0]!.systemPrompt).toBe("custom prompt");
+	});
+
+	test("M7: NONE on a requested suggestion says so every time", async () => {
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			completeResult: { content: [{ type: "text", text: "NONE" }], stopReason: "stop" },
+		});
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ autoTrigger: false }),
+		);
+		await fake.handlers.get("session_start")!({}, fake.ctx);
+		for (let press = 0; press < 2; press++) {
+			fake.inputHandler!("\x1b/");
+			await new Promise((r) => setTimeout(r, 0));
+		}
+		const none = fake.calls.notifies.filter(([m]) => m.includes("no suggestion"));
+		expect(none).toEqual([
+			["next-prompt: no suggestion; nothing clearly comes next", "info"],
+			["next-prompt: no suggestion; nothing clearly comes next", "info"],
+		]);
+		expect(fake.widgetContent).toBeUndefined();
+	});
+
+	test("M8: NONE on the automatic suggestion stays silent", async () => {
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			completeResult: { content: [{ type: "text", text: "NONE" }], stopReason: "stop" },
+		});
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(fake.calls.notifies).toHaveLength(0);
 	});
 });
 
