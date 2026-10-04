@@ -1708,15 +1708,18 @@ export function sanitizeSuggestion(
 		// you: **"execute core gameplay"** ..." or readiness/status reports
 		// like 'Ready for the **"execute verification"** gate whenever you
 		// want'. The quoted directive inside is the intended next prompt —
-		// extract it; a meta line without a quote is rejected.
+		// extract it; a meta line without a quote is rejected. A quote-less
+		// question is the user's voice, not a status report ("so everything is
+		// ready for the nightly run?", live-observed 2026-10-04): keep it.
 		const META_VOICE_RE =
 			/(?:next\s+input\s+I\s+need\s+from\s+you|your\s+next\s+(?:input|prompt|instruction|step)|(?:^|\s)ready\s+for\b|whenever\s+you(?:'re|\s+are)\s+ready\b|whenever\s+you\s+want\b|say\s+the\s+word\b)/i;
 		if (META_VOICE_RE.test(s)) {
 			const q =
 				s.match(/"([^"\n]{1,240})"/) ?? s.match(/“([^“”\n]{1,240})”/);
-			if (!q) continue;
-			s = q[1]!.trim();
-			if (s.length === 0) continue;
+			if (q) {
+				s = q[1]!.trim();
+				if (s.length === 0) continue;
+			} else if (!s.endsWith("?")) continue;
 		}
 
 		if (NARRATION_RE.test(s)) continue;

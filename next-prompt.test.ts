@@ -7052,6 +7052,15 @@ describe("suggestion quality corpus (deterministic)", () => {
 			'Ready for the **"execute verification"** gate (Phase D) whenever you want to run it.',
 			'execute verification',
 		],
+		// A quote-less meta-voice statement is still chatter.
+		['Ready for the verification gate whenever you want to run it.', ''],
+		// Live-observed (2026-10-04, manual trigger): a user question that
+		// happens to contain "ready for" is a real next prompt.
+		[
+			'so everything is ready for the nightly run?',
+			'so everything is ready for the nightly run?',
+		],
+		['whats your next step?', 'whats your next step?'],
 	];
 	for (const [raw, expected] of outputCases) {
 		test(`corpus output: ${JSON.stringify(raw)} → ${JSON.stringify(expected)}`, () => {
