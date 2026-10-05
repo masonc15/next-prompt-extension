@@ -65,9 +65,9 @@ The footer shows a comment-arrow icon (Nerd Font `md-comment_arrow_right`, so
 it needs a Nerd Font or a terminal that bundles the symbols, as Ghostty does). It
 is filled and bright green while `autoTrigger` is on, and a dim outline while it
 is off (it is hidden when an invalid config disables suggestions).
-**`Alt-N`** flips the setting and saves it to the global config, so it sticks
-across sessions. A trusted project config that sets `autoTrigger` still wins;
-the toggle warns you when that happens. Change the key with `autoTriggerKey`.
+**`Alt-N`** flips it for the current chat only. The choice is saved in that
+session, so resuming the chat keeps it, while other open chats and new ones keep
+following `autoTrigger` from the config (default on). Change the key with `autoTriggerKey`.
 
 The automatic suggestion may abstain: when nothing clearly comes next, the
 model answers `NONE` and nothing appears. A suggestion you ask for (accept-key
@@ -242,7 +242,7 @@ comes from the host's `CONFIG_DIR_NAME`:
 | `redoKey` | `"ctrl+="` | Any pi-tui `KeyId`; `ctrl+shift+…` of the same key also matches, so Ctrl+Plus works. Redoes a regenerate after `Ctrl+-` undid it. `"off"` disables it. |
 | `regenerateKey` | `"shift+right"` | Any pi-tui `KeyId`. On an idle agent, clears the input box (see `regenerateClearsText`) and computes a fresh suggestion; notes when the result is unchanged. Ignored when it equals `acceptKey`; `"off"` disables it. |
 | `autoTrigger` | `true` | When `true` (default), suggestions are computed automatically after every settled turn. When `false`, manual-only: the accept key doubles as the manual trigger (first press generates, second press accepts, in-flight press is a no-op). |
-| `autoTriggerKey` | `"alt+n"` | Any pi-tui `KeyId`; flips `autoTrigger` and saves it to the global config. `"off"` disables it, and so does a key that `acceptKey`, `regenerateKey`, or `redoKey` already uses. Read when the extension loads, so a change applies after `/reload`. Global config only. |
+| `autoTriggerKey` | `"alt+n"` | Any pi-tui `KeyId`; flips auto-trigger for the current chat and saves the choice in that session. `"off"` disables it, and so does a key that `acceptKey`, `regenerateKey`, or `redoKey` already uses. Read when the extension loads, so a change applies after `/reload`. Global config only. |
 | `renderMode` | `"widget"` | `"widget"` (below-editor line), `"ghost"` (inline greyed text in the box), or `"both"` (inline ghost + below-editor widget). On OMP, `ghost`/`both` work too (see the editor-coexistence note above). |
 | `rearmDelayMs` | `2000` | Delay (ms) before re-arming the last suggestion after the user deletes back to empty. No new model call. |
 | `systemPrompt` | built-in extractor | Config-file only (not prompted by `/next-prompt-config`). See `SYSTEM_PROMPT` in `next-prompt.ts`. |

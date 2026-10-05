@@ -239,8 +239,8 @@ export interface NextPromptConfig {
 	 */
 	autoTrigger?: boolean;
 	/**
-	 * Shortcut that flips `autoTrigger` and saves it to the global config.
-	 * Default "alt+n"; "off" disables it. Read from the global config when
+	 * Shortcut that flips `autoTrigger` for the current chat only; the choice
+	 * is saved in that session. Default "alt+n"; "off" disables it. Read from the global config when
 	 * the extension loads, so a change applies after `/reload`.
 	 */
 	autoTriggerKey?: string;
@@ -343,6 +343,8 @@ export const AUTO_TRIGGER_STATUS_KEY = "next-prompt";
 /** Nerd Font comment-arrow-right: filled while on, outline while off. */
 export const AUTO_TRIGGER_STATUS_ON = "\u{F09E3}";
 export const AUTO_TRIGGER_STATUS_OFF = "\u{F09E4}";
+/** Session entry recording a chat's own autoTrigger toggle (never sent to the model). */
+export const AUTO_TRIGGER_ENTRY_TYPE = "next-prompt-auto-trigger";
 /** Dracula green (#50fa7b); no built-in theme color reads as "on" this clearly. */
 const AUTO_TRIGGER_ON_COLOR = "\x1b[38;2;80;250;123m";
 const FG_RESET = "\x1b[39m";
@@ -865,6 +867,25 @@ export function autoTriggerKeyFromGlobalConfig(): string {
 		return "";
 	}
 	return key;
+}
+
+/**
+ * The chat's own autoTrigger toggle: the latest entry on the current branch,
+ * or undefined when this chat never toggled (the config value applies).
+ */
+export function sessionAutoTrigger(branch: readonly unknown[]): boolean | undefined {
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const e = branch[i] as
+			| { type?: unknown; customType?: unknown; data?: { autoTrigger?: unknown } }
+			| undefined;
+		if (
+			e?.type === "custom" &&
+			e.customType === AUTO_TRIGGER_ENTRY_TYPE &&
+			typeof e.data?.autoTrigger === "boolean"
+		)
+			return e.data.autoTrigger;
+	}
+	return undefined;
 }
 
 /** Footer glyph for the autoTrigger state: green when on, dim outline when off. */
@@ -3092,6 +3113,8 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 	// Tracks a custom-editor install that OMP must reset itself (it has no
 	// host-side extension-UI teardown like Pi's resetExtensionUI).
 	let editorInstalledForHost = false;
+	// This chat's own auto-trigger toggle; undefined follows the config.
+	let sessionToggle: boolean | undefined;
 
 	// Boundary: register lifecycle events and the config command through a
 	// structural API view so the host-specific event names typecheck under
@@ -3109,6 +3132,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				handler: (args: unknown, ctx: HostCtx) => unknown;
 			},
 		): void;
+		appendEntry?(customType: string, data?: unknown): void;
 		registerShortcut?(
 			shortcut: string,
 			options: {
@@ -3222,17 +3246,36 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		return effective;
 	}
 
+	// Whether this chat auto-triggers: its own toggle when it has one, else
+	// the config default.
+	function autoTriggerOn(): boolean {
+		return sessionToggle ?? effective?.autoTrigger ?? DEFAULT_AUTO_TRIGGER;
+	}
+
+	// Re-read the chat's toggle from its branch: on start, resume, fork, and
+	// tree navigation, each of which can land on a different toggle.
+	function loadSessionToggle(ctx: HostCtx): void {
+		try {
+			sessionToggle = sessionAutoTrigger(ctx.sessionManager.getBranch());
+		} catch {
+			sessionToggle = undefined;
+		}
+	}
+
 	// Footer glyph for autoTrigger. Hidden when suggestions are disabled, so
 	// it never claims auto mode while nothing can be computed.
 	function syncAutoTriggerStatus(ctx: HostCtx): void {
 		ctx.ui.setStatus?.(
 			AUTO_TRIGGER_STATUS_KEY,
 			effective && !effective.computeDisabled
-				? autoTriggerStatus(effective.autoTrigger, ctx.ui.theme)
+				? autoTriggerStatus(autoTriggerOn(), ctx.ui.theme)
 				: undefined,
 		);
 	}
 
+	// Flip auto-trigger for this chat only. The choice is saved in the
+	// session, so resuming the chat keeps it; other chats and new ones keep
+	// following the config.
 	async function toggleAutoTrigger(ctx: HostCtx): Promise<void> {
 		if (!isInteractiveContext(ctx) || !ref.state) return;
 		const current = reloadEffective(ctx);
@@ -3244,25 +3287,20 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			);
 			return;
 		}
-		const next = !current.autoTrigger;
-		if (!saveConfig({ autoTrigger: next }).saved) {
-			ctx.ui.notify("next-prompt: failed to save config; auto-trigger unchanged", "error");
-			return;
+		const next = !autoTriggerOn();
+		sessionToggle = next;
+		try {
+			api.appendEntry?.(AUTO_TRIGGER_ENTRY_TYPE, { autoTrigger: next });
+		} catch (err) {
+			// Still applies for the rest of this run; only resume loses it.
+			diag("auto_trigger_save_error", { err: String(err).slice(0, 160) });
 		}
-		const after = reloadEffective(ctx);
 		syncAutoTriggerStatus(ctx);
-		diag("auto_trigger_toggle", { requested: next, effective: after.autoTrigger });
-		if (after.autoTrigger !== next) {
-			ctx.ui.notify(
-				`next-prompt: saved autoTrigger ${next}, but the project config overrides it`,
-				"warning",
-			);
-			return;
-		}
+		diag("auto_trigger_toggle", { autoTrigger: next });
 		ctx.ui.notify(
 			next
-				? "next-prompt: auto-trigger on"
-				: `next-prompt: auto-trigger off (${humanizeKey(ref.state.acceptKey)} suggests on demand)`,
+				? "next-prompt: auto-trigger on for this chat"
+				: `next-prompt: auto-trigger off for this chat (${humanizeKey(ref.state.acceptKey)} suggests on demand)`,
 			"info",
 		);
 	}
@@ -3284,6 +3322,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		editorInstalled = false;
 		deniedConsents.clear();
 		sessionGrants.clear();
+		sessionToggle = undefined;
 
 		// F-03: no interactive UI => no invisible suggestion work in headless
 		// modes (Pi `mode !== "tui"`, OMP `hasUI !== true`).
@@ -3311,6 +3350,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		// has no project-trust API, so projectTrustedForHost falls back to the
 		// loader default there.
 		effective = reloadEffective(ctx);
+		loadSessionToggle(ctx);
 		syncAutoTriggerStatus(ctx);
 		if (effective.computeDisabled) {
 			ctx.ui.notify(
@@ -3454,7 +3494,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			}
 			// Manual-only mode: skip suggestions arriving from the automatic
 			// settle/end hook; manual trigger presses still work.
-			if (source === "auto" && !effective.autoTrigger) return;
+			if (source === "auto" && !autoTriggerOn()) return;
 			if (host === "pi" && !ctx.isIdle()) {
 				diag("skip", { why: "not_idle", source });
 				return;
@@ -3479,6 +3519,12 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 	});
 	api.on("agent_start", () => {
 		reset();
+	});
+
+	api.on("session_tree", (_e, ctx) => {
+		if (!ref.state || !effective) return;
+		loadSessionToggle(ctx);
+		syncAutoTriggerStatus(ctx);
 	});
 
 	api.on("session_shutdown", (_e, ctx) => {

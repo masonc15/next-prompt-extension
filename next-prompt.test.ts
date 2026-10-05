@@ -31,6 +31,8 @@ import {
 	AUTO_TRIGGER_STATUS_KEY,
 	appendDiagLine,
 	autoTriggerKeyFromGlobalConfig,
+	sessionAutoTrigger,
+	AUTO_TRIGGER_ENTRY_TYPE,
 	buildMessages,
 	buildTranscript,
 	configureInteractively,
@@ -1968,6 +1970,8 @@ function makeFake(opts: {
 	statuses: Map<string, string>;
 	/** Shortcuts registered through pi.registerShortcut, by key. */
 	shortcuts: Map<string, (ctx: unknown) => unknown>;
+	/** Session entries added through pi.appendEntry (also returned by getBranch). */
+	appended: unknown[];
 	setIdle: (v: boolean) => void;
 	editorComponentInstalled: boolean;
 	editorComponentCalls: number;
@@ -2026,6 +2030,7 @@ function makeFake(opts: {
 	editor.focused = true;
 	const statuses = new Map<string, string>();
 	const shortcuts = new Map<string, (ctx: unknown) => unknown>();
+	const appended: unknown[] = [];
 	const handlers = new Map<string, (e: unknown, ctx: unknown) => unknown>();
 	const ctx = {
 		cwd: "/tmp",
@@ -2176,11 +2181,14 @@ function makeFake(opts: {
 			},
 		},
 		sessionManager: {
-			getBranch: () => opts.branch ?? [],
+			getBranch: () => [...(opts.branch ?? []), ...appended],
 			getSessionId: () => opts.sessionId,
 		},
 	};
 	const pi = {
+		appendEntry: (customType: string, data?: unknown) => {
+			appended.push({ type: "custom", customType, data });
+		},
 		registerShortcut: (
 			key: string,
 			options: { handler: (ctx: unknown) => unknown },
@@ -2246,6 +2254,7 @@ function makeFake(opts: {
 		handlers,
 		statuses,
 		shortcuts,
+		appended,
 		setIdle: (v: boolean) => {
 			idle = v;
 		},
@@ -7266,7 +7275,7 @@ describe("autoTrigger status and toggle", () => {
 			readFileSync(join(process.env.PI_CODING_AGENT_DIR!, "next-prompt.json"), "utf-8"),
 		);
 
-	test("AT1: footer shows an accent glyph when autoTrigger is on", async () => {
+	test("AT1: footer shows a green glyph when autoTrigger is on", async () => {
 		const { fake } = await setup({ branch: [assistantEntry("a")] });
 		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(ON_GLYPH);
 	});
@@ -7281,7 +7290,7 @@ describe("autoTrigger status and toggle", () => {
 		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(OFF_GLYPH);
 	});
 
-	test("AT3: alt+n flips autoTrigger, saves it, and updates the footer", async () => {
+	test("AT3: alt+n flips autoTrigger for this chat and updates the footer", async () => {
 		writeFile(
 			process.env.PI_CODING_AGENT_DIR!,
 			"next-prompt.json",
@@ -7292,20 +7301,32 @@ describe("autoTrigger status and toggle", () => {
 		expect(toggle).toBeDefined();
 
 		await toggle(fake.ctx);
-		expect(globalConfig()).toEqual({ renderMode: "ghost", autoTrigger: false });
+		expect(fake.appended).toEqual([
+			{ type: "custom", customType: AUTO_TRIGGER_ENTRY_TYPE, data: { autoTrigger: false } },
+		]);
 		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(OFF_GLYPH);
 		expect(fake.calls.notifies.at(-1)).toEqual([
-			"next-prompt: auto-trigger off (Alt-/ suggests on demand)",
+			"next-prompt: auto-trigger off for this chat (Alt-/ suggests on demand)",
 			"info",
 		]);
 		await fake.handlers.get("agent_settled")!({}, fake.ctx);
 		expect(fake.calls.complete).toHaveLength(0);
 
 		await toggle(fake.ctx);
-		expect(globalConfig().autoTrigger).toBe(true);
 		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(ON_GLYPH);
 		await fake.handlers.get("agent_settled")!({}, fake.ctx);
 		expect(fake.calls.complete).toHaveLength(1);
+	});
+
+	test("AT3b: the toggle never writes the global config", async () => {
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ renderMode: "ghost" }),
+		);
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		await fake.shortcuts.get("alt+n")!(fake.ctx);
+		expect(globalConfig()).toEqual({ renderMode: "ghost" });
 	});
 
 	test("AT4: a manual config edit updates the footer at the next settle", async () => {
@@ -7319,16 +7340,35 @@ describe("autoTrigger status and toggle", () => {
 		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(OFF_GLYPH);
 	});
 
-	test("AT5: a project override is reported instead of claiming success", async () => {
+	test("AT5: resuming a chat restores its toggle over the config default", async () => {
+		const toggled = {
+			type: "custom",
+			customType: AUTO_TRIGGER_ENTRY_TYPE,
+			data: { autoTrigger: false },
+		} as unknown as BranchEntry;
+		const { fake } = await setup({ branch: [assistantEntry("a"), toggled] });
+		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(OFF_GLYPH);
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(fake.calls.complete).toHaveLength(0);
+	});
+
+	test("AT5b: a new chat follows the config, not another chat's toggle", async () => {
+		const first = await setup({ branch: [assistantEntry("a")] });
+		await first.fake.shortcuts.get("alt+n")!(first.fake.ctx);
 		const { fake } = await setup({ branch: [assistantEntry("a")] });
-		const cwd = mkdtempSync(join(tmpdir(), "np-at5-"));
-		writeFile(cwd, `${CONFIG_DIR_NAME}/next-prompt.json`, JSON.stringify({ autoTrigger: true }));
-		(fake.ctx as { cwd: string }).cwd = cwd;
-		await fake.shortcuts.get("alt+n")!(fake.ctx);
-		expect(globalConfig().autoTrigger).toBe(false);
 		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(ON_GLYPH);
-		expect(fake.calls.notifies.at(-1)?.[1]).toBe("warning");
-		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("AT5c: sessionAutoTrigger reads the latest toggle on the branch", () => {
+		const entry = (v: unknown) => ({
+			type: "custom",
+			customType: AUTO_TRIGGER_ENTRY_TYPE,
+			data: { autoTrigger: v },
+		});
+		expect(sessionAutoTrigger([])).toBeUndefined();
+		expect(sessionAutoTrigger([entry(false), entry(true)])).toBe(true);
+		expect(sessionAutoTrigger([entry(false), entry("yes")])).toBe(false);
+		expect(sessionAutoTrigger([{ type: "custom", customType: "other", data: { autoTrigger: false } }])).toBeUndefined();
 	});
 
 	test("AT6: invalid config hides the glyph and leaves the setting alone", async () => {
