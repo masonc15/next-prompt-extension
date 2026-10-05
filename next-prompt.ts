@@ -238,6 +238,12 @@ export interface NextPromptConfig {
 	 * being generated is a no-op.
 	 */
 	autoTrigger?: boolean;
+	/**
+	 * Shortcut that flips `autoTrigger` and saves it to the global config.
+	 * Default "alt+n"; "off" disables it. Read from the global config when
+	 * the extension loads, so a change applies after `/reload`.
+	 */
+	autoTriggerKey?: string;
 }
 
 /**
@@ -331,6 +337,15 @@ export function regenerateKeyFor(cfg: NextPromptConfig): string {
 }
 export const DEFAULT_REARM_MS = 2000;
 export const DEFAULT_AUTO_TRIGGER = true;
+export const DEFAULT_AUTO_TRIGGER_KEY = "alt+n";
+/** Footer status slot and glyph showing whether autoTrigger is on. */
+export const AUTO_TRIGGER_STATUS_KEY = "next-prompt";
+/** Nerd Font comment-arrow-right: filled while on, outline while off. */
+export const AUTO_TRIGGER_STATUS_ON = "\u{F09E3}";
+export const AUTO_TRIGGER_STATUS_OFF = "\u{F09E4}";
+/** Dracula green (#50fa7b); no built-in theme color reads as "on" this clearly. */
+const AUTO_TRIGGER_ON_COLOR = "\x1b[38;2;80;250;123m";
+const FG_RESET = "\x1b[39m";
 
 const MIN_REARM_DELAY = 50;
 /** Upper bound on a stored OpenCode session id (header hygiene). */
@@ -776,6 +791,11 @@ function parseConfig(text: string): {
 					console.warn(`next-prompt: invalid autoTrigger in config; ignoring`);
 				else cfg.autoTrigger = value;
 				break;
+			case "autoTriggerKey":
+				if (typeof value !== "string" || value.trim().length === 0)
+					console.warn(`next-prompt: invalid autoTriggerKey in config; ignoring`);
+				else cfg.autoTriggerKey = value;
+				break;
 			default:
 				console.warn(`next-prompt: unknown config key "${key}" ignored`);
 		}
@@ -804,6 +824,57 @@ export function loadEffectiveConfig(
 		projectTrusted,
 		computeDisabled,
 	};
+}
+
+/**
+ * The autoTrigger toggle shortcut from the global config, or "" when it is
+ * off. Read once at load because shortcuts are registered then. A key the
+ * accept, regenerate, or redo binding uses is dropped: the terminal-input
+ * listener would consume it before the shortcut fires.
+ */
+export function autoTriggerKeyFromGlobalConfig(): string {
+	let raw: Record<string, unknown> = {};
+	try {
+		const parsed: unknown = JSON.parse(
+			readFileSync(join(getAgentDir(), "next-prompt.json"), "utf-8"),
+		);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+			raw = parsed as Record<string, unknown>;
+	} catch {
+		// Missing or unreadable: use the default. session_start reports bad files.
+	}
+	const keyOf = (name: string, fallback: string): string => {
+		const value = raw[name];
+		return (
+			typeof value === "string" && value.trim().length > 0 ? value : fallback
+		)
+			.trim()
+			.toLowerCase();
+	};
+	const key = keyOf("autoTriggerKey", DEFAULT_AUTO_TRIGGER_KEY);
+	if (key === KEY_OFF) return "";
+	const taken = [
+		keyOf("acceptKey", DEFAULT_ACCEPT_KEY),
+		keyOf("regenerateKey", DEFAULT_REGENERATE_KEY),
+		keyOf("redoKey", DEFAULT_REDO_KEY),
+	];
+	if (taken.includes(key)) {
+		console.warn(
+			`next-prompt: autoTriggerKey "${key}" is already a next-prompt key; ignoring`,
+		);
+		return "";
+	}
+	return key;
+}
+
+/** Footer glyph for the autoTrigger state: green when on, dim outline when off. */
+export function autoTriggerStatus(
+	on: boolean,
+	theme?: { fg(color: string, text: string): string },
+): string {
+	if (on) return `${AUTO_TRIGGER_ON_COLOR}${AUTO_TRIGGER_STATUS_ON}${FG_RESET}`;
+	if (theme) return theme.fg("dim", AUTO_TRIGGER_STATUS_OFF);
+	return `${DIM}${AUTO_TRIGGER_STATUS_OFF}${RESET}`;
 }
 
 /**
@@ -2856,6 +2927,9 @@ export interface HostCtx extends HostContextLike {
 		): void;
 		getEditorText(): string;
 		setEditorText(text: string): void;
+		/** Footer status line (optional so minimal hosts and fakes still work). */
+		setStatus?: (key: string, text: string | undefined) => void;
+		theme?: { fg(color: string, text: string): string };
 		onTerminalInput(
 			handler: (data: string) => { consume?: boolean } | undefined,
 		): () => void;
@@ -3035,6 +3109,13 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				handler: (args: unknown, ctx: HostCtx) => unknown;
 			},
 		): void;
+		registerShortcut?(
+			shortcut: string,
+			options: {
+				description?: string;
+				handler: (ctx: HostCtx) => unknown;
+			},
+		): void;
 	};
 
 	function reset(): void {
@@ -3131,6 +3212,69 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	function reloadEffective(ctx: HostCtx): EffectiveConfig {
+		effective = loadEffectiveConfig(ctx.cwd, {
+			projectTrusted: projectTrustedForHost(ctx),
+			trustAvailable: hostTrustAvailableForHost(ctx),
+		});
+		diagEnabled = effective.debug === true;
+		diagMaxBytes = effective.debugMaxBytes;
+		return effective;
+	}
+
+	// Footer glyph for autoTrigger. Hidden when suggestions are disabled, so
+	// it never claims auto mode while nothing can be computed.
+	function syncAutoTriggerStatus(ctx: HostCtx): void {
+		ctx.ui.setStatus?.(
+			AUTO_TRIGGER_STATUS_KEY,
+			effective && !effective.computeDisabled
+				? autoTriggerStatus(effective.autoTrigger, ctx.ui.theme)
+				: undefined,
+		);
+	}
+
+	async function toggleAutoTrigger(ctx: HostCtx): Promise<void> {
+		if (!isInteractiveContext(ctx) || !ref.state) return;
+		const current = reloadEffective(ctx);
+		if (current.computeDisabled) {
+			syncAutoTriggerStatus(ctx);
+			ctx.ui.notify(
+				"next-prompt: suggestions are disabled by an invalid config; auto-trigger unchanged",
+				"warning",
+			);
+			return;
+		}
+		const next = !current.autoTrigger;
+		if (!saveConfig({ autoTrigger: next }).saved) {
+			ctx.ui.notify("next-prompt: failed to save config; auto-trigger unchanged", "error");
+			return;
+		}
+		const after = reloadEffective(ctx);
+		syncAutoTriggerStatus(ctx);
+		diag("auto_trigger_toggle", { requested: next, effective: after.autoTrigger });
+		if (after.autoTrigger !== next) {
+			ctx.ui.notify(
+				`next-prompt: saved autoTrigger ${next}, but the project config overrides it`,
+				"warning",
+			);
+			return;
+		}
+		ctx.ui.notify(
+			next
+				? "next-prompt: auto-trigger on"
+				: `next-prompt: auto-trigger off (${humanizeKey(ref.state.acceptKey)} suggests on demand)`,
+			"info",
+		);
+	}
+
+	const autoTriggerKey = autoTriggerKeyFromGlobalConfig();
+	if (autoTriggerKey) {
+		api.registerShortcut?.(autoTriggerKey, {
+			description: "Toggle next-prompt auto-trigger",
+			handler: (ctx) => toggleAutoTrigger(ctx),
+		});
+	}
+
 	api.on("session_start", (_e, ctx) => {
 		reset();
 		ref.unsubInput?.();
@@ -3166,12 +3310,8 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		// F-02: trust-gated, validated config with policy floors applied. OMP
 		// has no project-trust API, so projectTrustedForHost falls back to the
 		// loader default there.
-		effective = loadEffectiveConfig(ctx.cwd, {
-			projectTrusted: projectTrustedForHost(ctx),
-			trustAvailable: hostTrustAvailableForHost(ctx),
-		});
-		diagEnabled = effective.debug === true;
-		diagMaxBytes = effective.debugMaxBytes;
+		effective = reloadEffective(ctx);
+		syncAutoTriggerStatus(ctx);
 		if (effective.computeDisabled) {
 			ctx.ui.notify(
 				"next-prompt: invalid privacy-sensitive config; suggestions disabled",
@@ -3296,12 +3436,8 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			if (!ref.state || !effective) return;
 			// Re-read config so a mid-session edit takes effect on the next
 			// settle/end without a reload.
-			effective = loadEffectiveConfig(ctx.cwd, {
-				projectTrusted: projectTrustedForHost(ctx),
-				trustAvailable: hostTrustAvailableForHost(ctx),
-			});
-			diagEnabled = effective.debug === true;
-			diagMaxBytes = effective.debugMaxBytes;
+			effective = reloadEffective(ctx);
+			syncAutoTriggerStatus(ctx);
 			if (
 				effective.systemPromptFileError &&
 				!shownDiagnostics.has(`prompt-file:${effective.systemPromptFileError}`)
@@ -3345,7 +3481,8 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		reset();
 	});
 
-	api.on("session_shutdown", () => {
+	api.on("session_shutdown", (_e, ctx) => {
+		ctx?.ui?.setStatus?.(AUTO_TRIGGER_STATUS_KEY, undefined);
 		reset();
 		ref.unsubInput?.();
 		ref.unsubInput = undefined;

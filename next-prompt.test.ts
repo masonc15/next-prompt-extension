@@ -28,7 +28,9 @@ import { CONFIG_DIR_NAME, CustomEditor } from "@earendil-works/pi-coding-agent";
 import type { Api, AssistantMessage } from "@earendil-works/pi-ai";
 
 import {
+	AUTO_TRIGGER_STATUS_KEY,
 	appendDiagLine,
+	autoTriggerKeyFromGlobalConfig,
 	buildMessages,
 	buildTranscript,
 	configureInteractively,
@@ -1962,6 +1964,10 @@ function makeFake(opts: {
 		selects: Array<[string, string[]]>;
 	};
 	handlers: Map<string, (e: unknown, ctx: unknown) => unknown>;
+	/** Footer statuses set through ctx.ui.setStatus, by key. */
+	statuses: Map<string, string>;
+	/** Shortcuts registered through pi.registerShortcut, by key. */
+	shortcuts: Map<string, (ctx: unknown) => unknown>;
 	setIdle: (v: boolean) => void;
 	editorComponentInstalled: boolean;
 	editorComponentCalls: number;
@@ -2018,6 +2024,8 @@ function makeFake(opts: {
 	// Real pi-tui Editor as the focused component (F-13: real editor input).
 	const editor = makeStubEditor();
 	editor.focused = true;
+	const statuses = new Map<string, string>();
+	const shortcuts = new Map<string, (ctx: unknown) => unknown>();
 	const handlers = new Map<string, (e: unknown, ctx: unknown) => unknown>();
 	const ctx = {
 		cwd: "/tmp",
@@ -2110,6 +2118,11 @@ function makeFake(opts: {
 			) => {
 				widgetContent = content;
 			},
+			setStatus: (key: string, text: string | undefined) => {
+				if (text === undefined) statuses.delete(key);
+				else statuses.set(key, text);
+			},
+			theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` },
 			getEditorComponent: () => currentEditorFactory,
 			setEditorComponent: (
 				factory:
@@ -2168,6 +2181,12 @@ function makeFake(opts: {
 		},
 	};
 	const pi = {
+		registerShortcut: (
+			key: string,
+			options: { handler: (ctx: unknown) => unknown },
+		) => {
+			shortcuts.set(key, options.handler);
+		},
 		on: (event: string, handler: (e: unknown, c: unknown) => unknown) => {
 			handlers.set(event, handler);
 		},
@@ -2225,6 +2244,8 @@ function makeFake(opts: {
 		},
 		calls,
 		handlers,
+		statuses,
+		shortcuts,
 		setIdle: (v: boolean) => {
 			idle = v;
 		},
@@ -7230,5 +7251,121 @@ describe("model picker", () => {
 		);
 		expect(out).toBeUndefined();
 		expect(initialSelected).toBe("→ openai/gpt-6-luna — GPT-6 Luna ✓");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// autoTrigger footer status and toggle shortcut
+// ---------------------------------------------------------------------------
+
+describe("autoTrigger status and toggle", () => {
+	const ON_GLYPH = "\x1b[38;2;80;250;123m\u{F09E3}\x1b[39m";
+	const OFF_GLYPH = "<dim>\u{F09E4}</dim>";
+	const globalConfig = () =>
+		JSON.parse(
+			readFileSync(join(process.env.PI_CODING_AGENT_DIR!, "next-prompt.json"), "utf-8"),
+		);
+
+	test("AT1: footer shows an accent glyph when autoTrigger is on", async () => {
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(ON_GLYPH);
+	});
+
+	test("AT2: footer shows a dim glyph when autoTrigger is off", async () => {
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ autoTrigger: false }),
+		);
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(OFF_GLYPH);
+	});
+
+	test("AT3: alt+n flips autoTrigger, saves it, and updates the footer", async () => {
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ renderMode: "ghost" }),
+		);
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		const toggle = fake.shortcuts.get("alt+n")!;
+		expect(toggle).toBeDefined();
+
+		await toggle(fake.ctx);
+		expect(globalConfig()).toEqual({ renderMode: "ghost", autoTrigger: false });
+		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(OFF_GLYPH);
+		expect(fake.calls.notifies.at(-1)).toEqual([
+			"next-prompt: auto-trigger off (Alt-/ suggests on demand)",
+			"info",
+		]);
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(fake.calls.complete).toHaveLength(0);
+
+		await toggle(fake.ctx);
+		expect(globalConfig().autoTrigger).toBe(true);
+		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(ON_GLYPH);
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(fake.calls.complete).toHaveLength(1);
+	});
+
+	test("AT4: a manual config edit updates the footer at the next settle", async () => {
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ autoTrigger: false }),
+		);
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(OFF_GLYPH);
+	});
+
+	test("AT5: a project override is reported instead of claiming success", async () => {
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		const cwd = mkdtempSync(join(tmpdir(), "np-at5-"));
+		writeFile(cwd, `${CONFIG_DIR_NAME}/next-prompt.json`, JSON.stringify({ autoTrigger: true }));
+		(fake.ctx as { cwd: string }).cwd = cwd;
+		await fake.shortcuts.get("alt+n")!(fake.ctx);
+		expect(globalConfig().autoTrigger).toBe(false);
+		expect(fake.statuses.get(AUTO_TRIGGER_STATUS_KEY)).toBe(ON_GLYPH);
+		expect(fake.calls.notifies.at(-1)?.[1]).toBe("warning");
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("AT6: invalid config hides the glyph and leaves the setting alone", async () => {
+		writeFile(process.env.PI_CODING_AGENT_DIR!, "next-prompt.json", "{ not json");
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		expect(fake.statuses.has(AUTO_TRIGGER_STATUS_KEY)).toBe(false);
+		await fake.shortcuts.get("alt+n")!(fake.ctx);
+		expect(readFileSync(join(process.env.PI_CODING_AGENT_DIR!, "next-prompt.json"), "utf-8")).toBe(
+			"{ not json",
+		);
+		expect(fake.calls.notifies.at(-1)?.[1]).toBe("warning");
+	});
+
+	test("AT7: autoTriggerKey picks the key, and off or a taken key disables it", () => {
+		const dir = process.env.PI_CODING_AGENT_DIR!;
+		expect(autoTriggerKeyFromGlobalConfig()).toBe("alt+n");
+		writeFile(dir, "next-prompt.json", JSON.stringify({ autoTriggerKey: "Ctrl+Alt+A" }));
+		expect(autoTriggerKeyFromGlobalConfig()).toBe("ctrl+alt+a");
+		writeFile(dir, "next-prompt.json", JSON.stringify({ autoTriggerKey: "off" }));
+		expect(autoTriggerKeyFromGlobalConfig()).toBe("");
+		writeFile(dir, "next-prompt.json", JSON.stringify({ acceptKey: "alt+n" }));
+		expect(autoTriggerKeyFromGlobalConfig()).toBe("");
+	});
+
+	test("AT8: autoTriggerKey off registers no shortcut", async () => {
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ autoTriggerKey: "off" }),
+		);
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		expect(fake.shortcuts.size).toBe(0);
+	});
+
+	test("AT9: session_shutdown clears the glyph", async () => {
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		await fake.handlers.get("session_shutdown")!({}, fake.ctx);
+		expect(fake.statuses.has(AUTO_TRIGGER_STATUS_KEY)).toBe(false);
 	});
 });
