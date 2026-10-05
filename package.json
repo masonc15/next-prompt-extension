@@ -30,7 +30,8 @@
 		"typecheck": "tsc --noEmit",
 		"typecheck:omp": "tsc --noEmit -p tsconfig.omp.json",
 		"verify:package": "npm pack --dry-run --json | node -e 'let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const d=JSON.parse(s);const pkg=Object.values(d)[0];const got=pkg.files.map(f=>f.path).sort();const want=[\"LICENSE\",\"README.md\",\"next-prompt.ts\",\"package.json\"].sort();if(JSON.stringify(got)!==JSON.stringify(want)){console.error(\"package contents mismatch: got \"+JSON.stringify(got)+\" want \"+JSON.stringify(want));process.exit(1)}console.log(\"package contents exact: \"+got.join(\", \"))})'",
-		"verify:tarball": "node scripts/verify-tarball.mjs"
+		"verify:tarball": "node scripts/verify-tarball.mjs",
+		"stats": "node scripts/stats.mjs"
 	},
 	"publishConfig": {
 		"access": "public"

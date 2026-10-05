@@ -373,6 +373,28 @@ re-installs the editor once.
    entered text dismisses it and invalidates any in-flight request. Deleting back to
    empty re-arms the last suggestion after `rearmDelayMs` (no new model call).
 
+## Comparing suggestion models
+
+With `debug: true`, every request logs its model, thinking level, service tier,
+whether it was automatic or manual, and `ms`, the time spent in the model call
+alone (a consent dialog doesn't count). Each prompt you send also logs a
+`submit` line saying whether it was an accepted suggestion sent unchanged
+(`exact`), one you changed first (`edited`), or something you typed yourself
+(`typed`). Like the rest of the log, it records lengths, never the text.
+
+`scripts/stats.mjs` turns the log into one row per model, thinking level, and
+tier, with request counts, median and p90 generation time, cost, and how many
+shown suggestions you actually sent:
+
+```bash
+node scripts/stats.mjs                     # whole log, plus the rotated .1 file
+node scripts/stats.mjs --since 2026-10-06  # e.g. since switching models
+node scripts/stats.mjs --json
+```
+
+Log lines from before timing was recorded still count; their time is estimated
+from the gap between events and marked `~`.
+
 ## Develop
 
 Clone and run the checks with [Bun](https://bun.sh):
