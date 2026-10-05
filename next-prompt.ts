@@ -3060,7 +3060,7 @@ let diagMaxBytes: number | undefined;
 
 // Keeps an always-on debug log bounded: past the cap the file moves to
 // `<path>.1` (replacing the previous one), so at most ~2x the cap is on disk.
-export const DIAG_MAX_BYTES = 5 * 1024 * 1024;
+export const DIAG_MAX_BYTES = 50 * 1024 * 1024;
 
 export function appendDiagLine(
 	path: string,

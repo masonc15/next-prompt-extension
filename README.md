@@ -238,7 +238,7 @@ comes from the host's `CONFIG_DIR_NAME`:
 | `regenerateClearsText` | `"any"` | What `regenerateKey` may clear first. `"any"`: any text, including a draft. `"accepted"`: only an accepted suggestion you haven't edited. `"none"`: regenerate only works on an empty box. |
 | `sameSuggestionNotice` | `true` | Notify when a regenerate returns the same suggestion. |
 | `manualAfterInterrupt` | `true` | Let key-press suggestions run after an interrupted or failed reply. Automatic suggestions never do. |
-| `debugMaxBytes` | `5242880` | Debug log rotation cap in bytes (5 MB); past it the log moves to `.1`. `0` = no cap. Global config only. |
+| `debugMaxBytes` | `52428800` | Debug log rotation cap in bytes (50 MB, roughly two years of daily use); past it the log moves to `.1`. `0` = no cap. Global config only. |
 | `redoKey` | `"ctrl+="` | Any pi-tui `KeyId`; `ctrl+shift+…` of the same key also matches, so Ctrl+Plus works. Redoes a regenerate after `Ctrl+-` undid it. `"off"` disables it. |
 | `regenerateKey` | `"shift+right"` | Any pi-tui `KeyId`. On an idle agent, clears the input box (see `regenerateClearsText`) and computes a fresh suggestion; notes when the result is unchanged. Ignored when it equals `acceptKey`; `"off"` disables it. |
 | `autoTrigger` | `true` | When `true` (default), suggestions are computed automatically after every settled turn. When `false`, manual-only: the accept key doubles as the manual trigger (first press generates, second press accepts, in-flight press is a no-op). |
