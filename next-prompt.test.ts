@@ -29,6 +29,7 @@ import type { Api, AssistantMessage } from "@earendil-works/pi-ai";
 
 import {
 	AUTO_TRIGGER_STATUS_KEY,
+	classifySubmit,
 	appendDiagLine,
 	autoTriggerKeyFromGlobalConfig,
 	sessionAutoTrigger,
@@ -7407,5 +7408,84 @@ describe("autoTrigger status and toggle", () => {
 		const { fake } = await setup({ branch: [assistantEntry("a")] });
 		await fake.handlers.get("session_shutdown")!({}, fake.ctx);
 		expect(fake.statuses.has(AUTO_TRIGGER_STATUS_KEY)).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Timing and submit logging
+// ---------------------------------------------------------------------------
+
+describe("timing and submit logging", () => {
+	const logLines = () =>
+		readFileSyncSafe(join(process.env.PI_CODING_AGENT_DIR!, "next-prompt-debug.log"))
+			.split("\n")
+			.filter(Boolean)
+			.map((l) => JSON.parse(l) as Record<string, unknown>);
+	const events = (name: string) => logLines().filter((l) => l.event === name);
+	// The fields of `o` named in `want`, for comparing with toEqual.
+	const pick = (o: Record<string, unknown> | undefined, want: Record<string, unknown>) =>
+		Object.fromEntries(Object.keys(want).map((k) => [k, o?.[k]]));
+	const expectFields = (o: Record<string, unknown> | undefined, want: Record<string, unknown>) =>
+		expect(pick(o, want)).toEqual(want);
+	const debugOn = (extra: Record<string, unknown> = {}) =>
+		writeFile(
+			process.env.PI_CODING_AGENT_DIR!,
+			"next-prompt.json",
+			JSON.stringify({ debug: true, thinking: "low", ...extra }),
+		);
+	const submit = (fake: { handlers: Map<string, (e: unknown, c: unknown) => unknown>; ctx: unknown }, text: string, source = "interactive") =>
+		fake.handlers.get("input")!({ type: "input", text, source }, fake.ctx);
+
+	test("L1: classifySubmit tells exact, edited, and typed apart", () => {
+		expect(classifySubmit("run the tests", "run the tests ")).toEqual({ how: "exact", kept: 13 });
+		expect(classifySubmit("run the tests again", "run the tests")).toEqual({ how: "edited", kept: 13 });
+		expect(classifySubmit("commit it", "run the tests")).toEqual({ how: "edited", kept: 0 });
+		expect(classifySubmit("commit it", undefined)).toEqual({ how: "typed", kept: 0 });
+	});
+
+	test("L2: complete_done records duration, model, thinking, and source", async () => {
+		debugOn();
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		const [done] = events("complete_done");
+		expect(typeof done!.ms).toBe("number");
+		expectFields(done, { rid: 1, src: "auto", model: "openai/gpt", thinking: "low" });
+		expectFields(events("compute_go")[0], { rid: 1, src: "auto" });
+		expectFields(events("shown")[0], { rid: 1, src: "auto" });
+	});
+
+	test("L3: submitting an accepted suggestion unchanged logs an exact submit", async () => {
+		debugOn();
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		expect(fake.inputHandler!("\x1b/")).toEqual({ consume: true });
+		expectFields(events("accept")[0], { rid: 1, src: "auto" });
+		await submit(fake, "suggestion");
+		expect(events("submit")).toHaveLength(1);
+		expectFields(events("submit")[0], { how: "exact", rid: 1, src: "auto", len: 10, sugLen: 10, kept: 10 });
+	});
+
+	test("L4: edited and typed prompts are told apart; commands are skipped", async () => {
+		debugOn();
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		await fake.handlers.get("agent_settled")!({}, fake.ctx);
+		fake.inputHandler!("\x1b/");
+		await submit(fake, "suggestion please");
+		await submit(fake, "something else");
+		await submit(fake, "/reload");
+		await submit(fake, "from an extension", "extension");
+		const subs = events("submit");
+		expect(subs).toHaveLength(2);
+		expectFields(subs[0], { how: "edited", rid: 1, kept: 10, len: 17 });
+		expectFields(subs[1], { how: "typed", len: 14 });
+		expect(subs[1]!.rid).toBeUndefined();
+	});
+
+	test("L5: a manual trigger is tagged manual", async () => {
+		debugOn({ autoTrigger: false });
+		const { fake } = await setup({ branch: [assistantEntry("a")] });
+		fake.inputHandler!("\x1b/");
+		await new Promise((r) => setTimeout(r, 0));
+		expectFields(events("complete_done")[0], { rid: 1, src: "manual" });
 	});
 });

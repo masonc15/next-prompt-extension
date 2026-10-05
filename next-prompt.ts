@@ -888,6 +888,33 @@ export function sessionAutoTrigger(branch: readonly unknown[]): boolean | undefi
 	return undefined;
 }
 
+/** One suggestion request, as tagged on its log events. */
+export interface SuggestionRequest {
+	/** Per-process request number. */
+	rid: number;
+	src: "auto" | "manual";
+}
+
+export type SubmitKind = "exact" | "edited" | "typed";
+
+/**
+ * How a submitted prompt relates to the suggestion accepted before it:
+ * sent unchanged, changed first, or typed without accepting one. `kept` is
+ * the length of the prefix the prompt shares with the suggestion.
+ */
+export function classifySubmit(
+	text: string,
+	accepted: string | undefined,
+): { how: SubmitKind; kept: number } {
+	if (accepted === undefined) return { how: "typed", kept: 0 };
+	const a = accepted.trim();
+	const t = text.trim();
+	if (a === t) return { how: "exact", kept: a.length };
+	let kept = 0;
+	while (kept < a.length && kept < t.length && a[kept] === t[kept]) kept++;
+	return { how: "edited", kept };
+}
+
 /** Footer glyph for the autoTrigger state: green when on, dim outline when off. */
 export function autoTriggerStatus(
 	on: boolean,
@@ -2051,6 +2078,10 @@ function stripAnsi(s: string): string {
 export interface SuggestionState {
 	suggestion: string;
 	lastSuggestion: string;
+	/** Request that produced `lastSuggestion`, for joining log events. */
+	shownRequest?: SuggestionRequest;
+	/** The suggestion last accepted into the editor, until the next submit. */
+	accepted?: Partial<SuggestionRequest> & { text: string };
 	acceptKey: string;
 	/** Replaces the showing suggestion with a fresh one; "" disables. */
 	regenerateKey: string;
@@ -2214,6 +2245,8 @@ function showSuggestion(
 	text: string,
 	generation: number,
 	checkIdle: boolean,
+	/** The request that produced `text`; re-shows of a cached one omit it. */
+	request?: SuggestionRequest,
 ): void {
 	if (renderGate(state, generation, checkIdle) !== undefined) {
 		diag("show_drop", {
@@ -2223,10 +2256,11 @@ function showSuggestion(
 	}
 	state.suggestion = text;
 	state.lastSuggestion = text;
+	if (request) state.shownRequest = request;
 	clearRearmTimer(state);
 	clearRearmCheckTimer(state);
 	renderSuggestion(state);
-	diag("shown", { len: text.length, mode: state.renderMode });
+	diag("shown", { len: text.length, mode: state.renderMode, ...state.shownRequest });
 }
 
 /**
@@ -2401,7 +2435,8 @@ function makeInputHandler(
 			// Accept: fill the editor, keep the suggestion cached for delete-to-empty
 			// re-arm, clear the widget, bump the input generation (invalidates any
 			// in-flight compute), and remember there is nothing to delete yet.
-			diag("accept", { len: state.suggestion.length });
+			diag("accept", { len: state.suggestion.length, ...state.shownRequest });
+			state.accepted = { ...state.shownRequest, text: state.suggestion };
 			state.lastSuggestion = state.suggestion;
 			state.suggestion = "";
 			state.inputGeneration += 1;
@@ -3113,6 +3148,8 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 	// Tracks a custom-editor install that OMP must reset itself (it has no
 	// host-side extension-UI teardown like Pi's resetExtensionUI).
 	let editorInstalledForHost = false;
+	// Numbers suggestion requests so their log events can be joined.
+	let requestCount = 0;
 	// This chat's own auto-trigger toggle; undefined follows the config.
 	let sessionToggle: boolean | undefined;
 
@@ -3511,9 +3548,31 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 	}
 
 	// Clear suggestion + abort in-flight the instant the user submits or the agent starts.
-	api.on("input", () => {
+	api.on("input", (event) => {
+		logSubmit(event);
 		reset();
 	});
+
+	// Record how each typed prompt relates to the accepted suggestion, so the
+	// log shows which suggestions were actually sent. Lengths only, no text.
+	function logSubmit(event: unknown): void {
+		const state = ref.state;
+		const e = event as { text?: unknown; source?: unknown } | undefined;
+		if (!state || typeof e?.text !== "string") return;
+		if (e.source !== undefined && e.source !== "interactive") return;
+		const accepted = state.accepted;
+		state.accepted = undefined;
+		// Slash commands and `!` shell lines are not prompts.
+		if (!accepted && /^[/!]/.test(e.text.trimStart())) return;
+		const { how, kept } = classifySubmit(e.text, accepted?.text);
+		diag("submit", {
+			how,
+			len: e.text.trim().length,
+			...(accepted
+				? { rid: accepted.rid, src: accepted.src, sugLen: accepted.text.trim().length, kept }
+				: {}),
+		});
+	}
 	api.on("turn_start", () => {
 		reset();
 	});
@@ -3593,7 +3652,19 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			diag("skip", { why: "empty_transcript" });
 			return;
 		}
+		const request: SuggestionRequest = {
+			rid: ++requestCount,
+			src: manual ? "manual" : "auto",
+		};
+		const timing = {
+			...request,
+			model: `${resolved.model.provider}/${resolved.model.id}`,
+			thinking: effective.thinking,
+			tier: tierFor(resolved.model, effective.serviceTier),
+		};
 		diag("compute_go", {
+			rid: request.rid,
+			src: request.src,
 			tChars: transcript.length,
 			model: `${resolved.model.provider}/${resolved.model.id}`,
 			cross: resolved.crossDestination,
@@ -3745,6 +3816,9 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		const spinnerMode = effective.spinner ?? "manual";
 		if (spinnerMode === "always" || (spinnerMode === "manual" && manual))
 			startSpinner(state);
+		// Timed around the model call only, after any consent dialog.
+		const started = performance.now();
+		const elapsed = () => Math.round(performance.now() - started);
 		try {
 			resp = await completeSuggestion(host, ctx, resolved.model, context, {
 				signal: ac.signal,
@@ -3754,7 +3828,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				serviceTier: effective.serviceTier,
 			});
 		} catch (err) {
-			diag("complete_error", { aborted: ac.signal.aborted });
+			diag("complete_error", { aborted: ac.signal.aborted, ms: elapsed(), ...timing });
 			if (!ac.signal.aborted) {
 				ctx.ui.notify("next-prompt: suggestion failed", "error");
 			}
@@ -3764,10 +3838,11 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 			stopSpinner(state);
 		}
 		diag("complete_done", {
+			ms: elapsed(),
+			...timing,
 			sr: resp?.stopReason,
 			out: resp?.usage?.output,
 			cost: resp?.usage?.cost?.total,
-			tier: tierFor(resolved.model, effective.serviceTier),
 			err: resp?.errorMessage,
 		});
 		if (ac.signal.aborted || generation !== state.inputGeneration) {
@@ -3833,7 +3908,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		}
 		if (clean) {
 			if (ref.state === state) {
-				showSuggestion(state, clean, generation, host === "pi");
+				showSuggestion(state, clean, generation, host === "pi", request);
 				if (
 					effective.sameSuggestionNotice !== false &&
 					regeneratedFrom &&
