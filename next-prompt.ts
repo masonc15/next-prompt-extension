@@ -1920,6 +1920,11 @@ export function shouldTrigger(
 const DIM_START = "\x1b[2m";
 const DIM_END = "\x1b[22m";
 const CURSOR_BLOCK_END = "\x1b[0m"; // ends the \x1b[7m... reverse-video cursor
+// Pi >= 1.2 wraps the cursor cell in zero-width APC markers instead
+// (CURSOR_MARKER + FAKE_CURSOR_START + glyph + FAKE_CURSOR_END) and resolves
+// them in the TUI. Defined locally: older Pi and OMP do not export them.
+const FAKE_CURSOR_START = "\x1b_pi:fc\x07";
+const FAKE_CURSOR_END = "\x1b_pi:/fc\x07";
 
 /**
  * Skip the editor's cursor representation starting at `i` (the position just
@@ -1936,11 +1941,17 @@ function skipCursorRepresentation(line: string, i: number): number {
 	while (j < n) {
 		const c = line[j]!;
 		if (c === "\x1b") {
-			if (line[j + 1] === "[") {
+			const kind = line[j + 1];
+			if (kind === "[") {
 				// CSI: consume through the final byte (0x40..0x7E).
 				let k = j + 2;
 				while (k < n && (line.charCodeAt(k) < 0x40 || line.charCodeAt(k) > 0x7e)) k += 1;
 				j = Math.min(n, k + 1);
+				continue;
+			}
+			if (kind === "]" || kind === "_" || kind === "P" || kind === "^" || kind === "X") {
+				// OSC/APC/DCS/PM/SOS: consume through the terminator, never split it.
+				j = consumeControlString(line, j + 2, n);
 				continue;
 			}
 			j = Math.min(n, j + 2); // ESC + one byte
@@ -2018,10 +2029,16 @@ export function overlayGhost(
 		CURSOR_BLOCK_END,
 		markerIdx + CURSOR_MARKER.length,
 	);
+	const afterMarker = markerIdx + CURSOR_MARKER.length;
+	const fakeCursorEnd = line.startsWith(FAKE_CURSOR_START, afterMarker)
+		? line.indexOf(FAKE_CURSOR_END, afterMarker + FAKE_CURSOR_START.length)
+		: -1;
 	const insertAt =
-		cursorBlockEnd !== -1
-			? cursorBlockEnd + CURSOR_BLOCK_END.length
-			: skipCursorRepresentation(line, markerIdx + CURSOR_MARKER.length);
+		fakeCursorEnd !== -1
+			? fakeCursorEnd + FAKE_CURSOR_END.length
+			: cursorBlockEnd !== -1
+				? cursorBlockEnd + CURSOR_BLOCK_END.length
+				: skipCursorRepresentation(line, afterMarker);
 
 	// Compute the visible width of the real content before the cursor (text +
 	// cursor glyph; ANSI and the marker stripped) so the ghost is sized to fit

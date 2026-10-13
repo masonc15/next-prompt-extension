@@ -1434,6 +1434,24 @@ describe("overlayGhost", () => {
 		expect(out[2]).toBe(lines[2]); // bottom border untouched
 		expect(out[1]).not.toBe(lines[1]);
 	});
+	test("T59c: pi >= 1.2 fake-cursor APC markers — ghost goes after the end marker, never inside one", () => {
+		// Regression: the ghost was spliced into "\x1b_pi:fc\x07" right after "\x1b_p",
+		// leaking "i:fc" as visible text and a BEL after the suggestion.
+		const fakeStart = "\x1b_pi:fc\x07";
+		const fakeEnd = "\x1b_pi:/fc\x07";
+		const border = "─".repeat(WIDTH);
+		const line = "hi" + CURSOR_MARKER + fakeStart + " " + fakeEnd + " ".repeat(WIDTH - 3);
+		const out = overlayGhost([border, line, border], "sug", WIDTH);
+		const cursorLine = out[1]!;
+		expect(cursorLine).toContain(CURSOR_MARKER + fakeStart + " " + fakeEnd + "\x1b[2msug\x1b[22m");
+		expect(visibleWidth(cursorLine)).toBe(WIDTH);
+	});
+	test("T59d: fallback cursor skip consumes a whole APC string", () => {
+		const border = "─".repeat(WIDTH);
+		const line = "hi" + CURSOR_MARKER + "\x1b_other\x07>" + " ".repeat(WIDTH - 3);
+		const out = overlayGhost([border, line, border], "sug", WIDTH);
+		expect(out[1]).toContain("\x1b_other\x07>\x1b[2msug\x1b[22m");
+	});
 	const plain = (s: string) =>
 		s.replace(CURSOR_MARKER, "").replace(/\x1b\[[0-9;]*m/g, "");
 	test("T60b: cursor before existing text — ghost never pushes the line past width", () => {
