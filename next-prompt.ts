@@ -2163,6 +2163,25 @@ export interface SuggestionState {
 	 */
 	globalInputData?: string;
 	globalInputGeneration?: number;
+	/**
+	 * Whether the ghost editor has keyboard focus, set when the editor is
+	 * built. Undefined without one (widget-only mode), where focus is unknown.
+	 */
+	editorFocused?: () => boolean;
+}
+
+/**
+ * Whether `editor` has keyboard focus in `tui`. The global input listener runs
+ * before the focused component, so without this check it acts on keys meant
+ * for another extension's screen, such as a game or picker that uses the
+ * accept key. Pi's TUI exposes getFocusedComponent() and OMP's getFocused().
+ * A TUI with neither leaves focus unknown, which keeps the old behavior.
+ */
+export function editorHasFocus(tui: unknown, editor: unknown): boolean {
+	const host = tui as { getFocusedComponent?: () => unknown; getFocused?: () => unknown } | undefined;
+	if (typeof host?.getFocusedComponent === "function") return host.getFocusedComponent() === editor;
+	if (typeof host?.getFocused === "function") return host.getFocused() === editor;
+	return true;
 }
 
 /** Publish the below-editor widget (or clear it when there's no suggestion). */
@@ -3254,6 +3273,7 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 				priorEditor !== undefined && priorEditor !== null
 					? new DecoratingGhostEditor(tui, theme, kb, state, priorEditor)
 					: new GhostEditor(tui, theme, kb, state);
+			state.editorFocused = () => editorHasFocus(tui, ed);
 			state.renderGhost = () => {
 				try {
 					ed.requestGhostRender();
@@ -3468,10 +3488,13 @@ export default function nextPromptExtension(pi: ExtensionAPI): void {
 		// Global terminal-input listener: accept/dismiss is editor-independent.
 		// When autoTrigger is off, the accept key doubles as the manual trigger
 		// (see makeInputHandler): pass a callback that computes on demand.
-		ref.unsubInput = ctx.ui.onTerminalInput(
-			makeInputHandler(state, () => consentDialogOpen, true, () => {
-				void handleSettled(ctx, undefined, "manual");
-			}),
+		// Keys go to whatever has focus; while another component (a custom
+		// screen, an overlay) does, they aren't prompt input.
+		const handleInput = makeInputHandler(state, () => consentDialogOpen, true, () => {
+			void handleSettled(ctx, undefined, "manual");
+		});
+		ref.unsubInput = ctx.ui.onTerminalInput((data) =>
+			state.editorFocused?.() === false ? undefined : handleInput(data),
 		);
 	});
 

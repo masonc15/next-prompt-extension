@@ -29,6 +29,7 @@ import type { Api, AssistantMessage } from "@earendil-works/pi-ai";
 
 import {
 	AUTO_TRIGGER_STATUS_KEY,
+	editorHasFocus,
 	classifySubmit,
 	appendDiagLine,
 	autoTriggerKeyFromGlobalConfig,
@@ -1937,6 +1938,8 @@ function makeFake(opts: {
 	setEditorComponentThrows?: boolean;
 	/** The constructed GhostEditor's tui.requestRender throws (ghost render pipeline fails). */
 	requestRenderThrows?: boolean;
+	/** Gives the TUI Pi's getFocusedComponent(); omitted, focus is unknown. */
+	focusedComponent?: () => unknown;
 	confirmResult?:
 		| boolean
 		| Promise<boolean>
@@ -2193,6 +2196,7 @@ function makeFake(opts: {
 								throw new Error("ghost render pipeline failed");
 							}
 						},
+						...(opts.focusedComponent ? { getFocusedComponent: opts.focusedComponent } : {}),
 					} as unknown,
 					{ borderColor: (s: string) => s, selectList: {} } as unknown,
 					{ matches: () => false } as unknown,
@@ -3711,6 +3715,80 @@ describe("accept handler (onTerminalInput)", () => {
 // Manual trigger (autoTrigger off): the accept key doubles as the trigger —
 // first press generates, second press accepts, an in-flight press is a no-op.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Focus: the global listener sees every key before the focused component, so
+// it must leave keys alone while another component (an extension's custom
+// screen, an overlay) has focus.
+// ---------------------------------------------------------------------------
+
+describe("editor focus", () => {
+	test("EF1: editorHasFocus reads Pi's and OMP's focus getters", () => {
+		const editor = {};
+		const other = {};
+		expect(editorHasFocus({ getFocusedComponent: () => editor }, editor)).toBe(true);
+		expect(editorHasFocus({ getFocusedComponent: () => other }, editor)).toBe(false);
+		expect(editorHasFocus({ getFocused: () => editor }, editor)).toBe(true);
+		expect(editorHasFocus({ getFocused: () => null }, editor)).toBe(false);
+		// No getter: focus is unknown, so the listener keeps working.
+		expect(editorHasFocus({}, editor)).toBe(true);
+		expect(editorHasFocus(undefined, editor)).toBe(true);
+	});
+
+	async function focusSetup(config: Record<string, unknown>) {
+		const focus: { current: unknown } = { current: undefined };
+		const { fake } = await setup({
+			branch: [assistantEntry("a")],
+			focusedComponent: () => focus.current,
+			completeResult: { content: [{ type: "text", text: "next thing" }], stopReason: "stop" },
+		});
+		writeFile(process.env.PI_CODING_AGENT_DIR!, "next-prompt.json", JSON.stringify(config));
+		await fake.handlers.get("session_start")!({}, fake.ctx);
+		const game = { render: () => [], handleInput: () => {} };
+		const focusEditor = () => {
+			focus.current = fake.lastEditorComponent;
+		};
+		const focusGame = () => {
+			focus.current = game;
+		};
+		focusEditor();
+		return { fake, focusEditor, focusGame };
+	}
+
+	test("EF2: the accept key passes through to a focused custom screen instead of triggering", async () => {
+		const { fake, focusEditor, focusGame } = await focusSetup({
+			renderMode: "ghost",
+			autoTrigger: false,
+			acceptKey: "right",
+		});
+		const right = "\x1b[1;1:1C"; // Ghostty's kitty-protocol right arrow press
+
+		focusGame();
+		expect(fake.inputHandler!(right)).toBeUndefined();
+		expect(fake.inputHandler!("\x1b[C")).toBeUndefined();
+		expect(fake.calls.complete).toHaveLength(0);
+
+		focusEditor();
+		expect(fake.inputHandler!(right)).toEqual({ consume: true });
+		expect(fake.calls.complete).toHaveLength(1);
+	});
+
+	test("EF3: a showing suggestion is not accepted while another component has focus", async () => {
+		const { fake, focusEditor, focusGame } = await focusSetup({ renderMode: "both", autoTrigger: false });
+		expect(fake.inputHandler!("\x1b/")).toEqual({ consume: true });
+		await new Promise((r) => setTimeout(r, 0));
+		expect(fake.widgetContent?.[0] ?? "").toContain("next thing");
+
+		focusGame();
+		expect(fake.inputHandler!("\x1b/")).toBeUndefined();
+		expect(fake.editorText).toBe("");
+		expect(fake.widgetContent?.[0] ?? "").toContain("next thing");
+
+		focusEditor();
+		expect(fake.inputHandler!("\x1b/")).toEqual({ consume: true });
+		expect(fake.editorText).toBe("next thing");
+	});
+});
 
 describe("manual trigger (autoTrigger off)", () => {
 	test("M1: agent_settled with autoTrigger=false does not auto-compute", async () => {
